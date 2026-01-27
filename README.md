@@ -632,6 +632,9 @@ Models with `hasRevisions: true` gain revision metadata fields and helpers:
 - Instance helpers (`newRevision`, `deleteAllRevisions`).
 - `filterWhere.revisionData()` exposes typed predicates for `_rev*` columns when querying revision metadata.
 
+`_revSummary` is disabled by default. If you want it, add the column in your
+schema and call `setRevisionSummaryEnabled(true)` at bootstrap.
+
 ## Multilingual Strings
 
 The DAL provides runtime-validated multilingual string schemas via `mlString` (imported from `rev-dal/lib/ml-string`). These enforce a security model that distinguishes plain text from HTML content at write time.
