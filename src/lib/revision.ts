@@ -10,6 +10,7 @@ import type {
   VersionedModelInstance,
 } from './model-types.js';
 import type { JoinOptions } from './query-builder.js';
+import { isRevisionSummaryEnabled } from './runtime.js';
 import types from './type.js';
 
 /**
@@ -106,15 +107,27 @@ export interface RevisionHelpers {
   staleError: Error;
 }
 
-export const REVISION_FIELD_MAPPINGS = Object.freeze({
+const BASE_REVISION_FIELD_MAPPINGS = Object.freeze({
   _revID: '_rev_id',
   _revUser: '_rev_user',
   _revDate: '_rev_date',
   _revTags: '_rev_tags',
   _revDeleted: '_rev_deleted',
   _oldRevOf: '_old_rev_of',
-  _revSummary: '_rev_summary',
 });
+
+export const REVISION_FIELD_MAPPINGS = BASE_REVISION_FIELD_MAPPINGS;
+
+const getRevisionFieldMappings = (): Record<string, string> => {
+  if (!isRevisionSummaryEnabled()) {
+    return BASE_REVISION_FIELD_MAPPINGS;
+  }
+
+  return {
+    ...BASE_REVISION_FIELD_MAPPINGS,
+    _revSummary: '_rev_summary',
+  };
+};
 
 const deletedError = new Error('Revision has been deleted.');
 deletedError.name = 'RevisionDeletedError';
@@ -438,15 +451,23 @@ const revision: RevisionHelpers = {
    * @returns Schema fields for revision system
    */
   getSchema() {
-    return {
+    const schema = {
       _revUser: types.string().uuid(4).required(true),
       _revDate: types.date().required(true),
       _revID: types.string().uuid(4).required(true),
       _oldRevOf: types.string().uuid(4),
       _revDeleted: types.boolean().default(false),
       _revTags: types.array(types.string()).default([]),
-      _revSummary: mlString.getSafeTextSchema({ maxLength: 300 }),
     };
+
+    if (isRevisionSummaryEnabled()) {
+      return {
+        ...schema,
+        _revSummary: mlString.getSafeTextSchema({ maxLength: 300 }),
+      };
+    }
+
+    return schema;
   },
 
   /**
@@ -460,7 +481,7 @@ const revision: RevisionHelpers = {
       return;
     }
 
-    for (const [camel, snake] of Object.entries(REVISION_FIELD_MAPPINGS)) {
+    for (const [camel, snake] of Object.entries(getRevisionFieldMappings())) {
       ModelClass._registerFieldMapping(camel, snake);
     }
   },

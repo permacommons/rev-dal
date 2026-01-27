@@ -7,7 +7,7 @@ import type { JoinApplyBuilder, JoinOptions, JoinRelationOptions } from './lib/q
 import QueryBuilder from './lib/query-builder.js';
 import revision from './lib/revision.js';
 import type { DalDebugLogger, DalLanguageProvider } from './lib/runtime.js';
-import { setDebugLogger, setLanguageProvider } from './lib/runtime.js';
+import { setDebugLogger, setLanguageProvider, setRevisionSummaryEnabled } from './lib/runtime.js';
 import types from './lib/type.js';
 
 /**
@@ -66,6 +66,7 @@ export {
   revision,
   setLanguageProvider,
   setDebugLogger,
+  setRevisionSummaryEnabled,
   createDataAccessLayer,
 };
 

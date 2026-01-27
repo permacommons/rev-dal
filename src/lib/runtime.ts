@@ -135,6 +135,8 @@ let debugLogger: DalDebugLogger = {
   error: () => undefined,
 };
 
+let revisionSummaryEnabled = false;
+
 export const debug = {
   db: (...args: unknown[]) => {
     debugLogger.db(...args);
@@ -153,3 +155,9 @@ export const getLanguageProvider = (): DalLanguageProvider => languageProvider;
 export const setDebugLogger = (logger: DalDebugLogger): void => {
   debugLogger = logger;
 };
+
+export const setRevisionSummaryEnabled = (enabled: boolean): void => {
+  revisionSummaryEnabled = enabled;
+};
+
+export const isRevisionSummaryEnabled = (): boolean => revisionSummaryEnabled;
