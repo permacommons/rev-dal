@@ -63,6 +63,40 @@ psql -v app_db=libreviews -v app_user=libreviews_user \
      -f setup-db-grants.sql
 ```
 
+## Testing
+
+rev-dal uses Node's built-in test runner with `tsx` to execute TypeScript tests.
+
+```bash
+npm test
+```
+
+### Test Database Setup
+
+Integration tests require PostgreSQL with the `pgcrypto` extension available. The test harness
+creates a fresh schema per run and cleans it up afterwards.
+
+Provide a connection string via `REV_DAL_TEST_DATABASE_URL`:
+
+```bash
+export REV_DAL_TEST_DATABASE_URL="postgres://rev_dal_test_user:rev_dal_password@localhost:5432/rev_dal_test"
+npm test
+```
+
+If your test user cannot create extensions, run this once as a superuser:
+
+```bash
+psql -d rev_dal_test -c 'CREATE EXTENSION IF NOT EXISTS "pgcrypto";'
+```
+
+### Type Tests
+
+Type-level checks live under `test/types/` and are compiled with a dedicated config:
+
+```bash
+npm run test:types
+```
+
 ## Core Building Blocks
 
 - **DataAccessLayer (`src/lib/data-access-layer.ts`)** – Owns the shared `pg.Pool`, manages migrations, and keeps a per-instance `ModelRegistry` so constructors are isolated between DALs (useful for fixtures/tests).
