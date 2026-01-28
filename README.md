@@ -290,27 +290,24 @@ Manifests drive all type inference:
 - **Bundle helpers for manifests**:
   - `ManifestTypes<Manifest, StaticMethods, InstanceMethods, Relations>` packages the data, virtual, instance, and model types
     into a single object.
-  - `ManifestExports<Manifest, Options>` builds on `ManifestTypes` with a single options object (`relations`, `statics`,
-    `instances`) and additionally returns typed `StaticMethods`/`InstanceMethods` mappings. Use this to keep manifest exports
-    short when declaring both types and methods.
+  - `ManifestBundle<Manifest, Relations, StaticMethods, InstanceMethods>` builds on `ManifestTypes` and additionally returns
+    typed `StaticMethods`/`InstanceMethods` mappings. Use this to keep manifest exports short without circular aliases.
 - **Method mapping helpers**:
   - `StaticMethodsFrom`/`InstanceMethodsFrom` map plain method signatures to manifest-aware `this` types so authors don't need
     to annotate every method with `this: ModelType` or `this: InstanceType`. The generics are ordered as manifest, method map,
     then relation fields (plus instance methods for static methods) to match the call graph.
 - Static/instance methods declared via `defineStaticMethods`/`defineInstanceMethods` receive correctly typed `this` via contextual `ThisType`
 
-Example using `ManifestExports` to keep manifests terse:
+Example using `ManifestBundle` to keep manifests terse:
 
 ```ts
 type ThingRelations = { files?: FileInstance[] };
 
-type ThingTypes = ManifestExports<
+type ThingTypes = ManifestBundle<
   typeof thingManifest,
-  {
-    relations: ThingRelations;
-    statics: { getWithData(id: string): Promise<ThingTypes['Instance']> };
-    instances: { populateUserInfo(user: UserAccessContext | null | undefined): void };
-  }
+  ThingRelations,
+  { getWithData(id: string): Promise<ThingTypes['Instance']> },
+  { populateUserInfo(user: UserAccessContext | null | undefined): void }
 >;
 
 type ThingInstance = ThingTypes['Instance'];

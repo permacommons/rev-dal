@@ -464,60 +464,25 @@ export type ManifestTypes<
 };
 
 /**
- * Convenience bundle that layers method typing into {@link ManifestTypes}.
+ * Bundle convenience that keeps manifest files terse without circular aliases.
  *
- * Model manifests frequently need to export the fully-typed instance/static
- * methods alongside the derived model and instance shapes. This helper reduces
- * the boilerplate by returning the method types together with the usual data,
- * virtual, instance, and model aliases in one shot.
+ * Provide the relation fields and the raw static/instance method maps, and
+ * this helper derives the typed instance/model along with data/virtual shapes.
  */
-type ManifestTypeOptions<
+export type ManifestBundle<
+  Manifest extends ModelManifest,
   RelationFields extends object = Record<never, never>,
   StaticMethods extends MethodRecord = EmptyRecord,
   InstanceMethods extends Record<string, InstanceMethod> = EmptyInstanceMethods,
-> = {
-  relations?: RelationFields;
-  statics?: StaticMethods;
-  instances?: InstanceMethods;
-};
-
-/**
- * Bundle convenience that accepts a single options object instead of multiple
- * positional generics. This reduces boilerplate in manifests by grouping
- * relations, static methods, and instance methods under descriptive keys.
- */
-export type ManifestExports<
-  Manifest extends ModelManifest,
-  Options extends ManifestTypeOptions = ManifestTypeOptions,
-> = ManifestTypes<
-  Manifest,
-  Options['statics'] extends MethodRecord ? Options['statics'] : EmptyRecord,
-  Options['instances'] extends Record<string, InstanceMethod>
-    ? Options['instances']
-    : EmptyInstanceMethods,
-  Options['relations'] extends object ? Options['relations'] : Record<never, never>
-> & {
+> = ManifestTypes<Manifest, StaticMethods, InstanceMethods, RelationFields> & {
   /**
    * Instance methods with correctly typed `this` context.
    */
-  InstanceMethods: InstanceMethodsFrom<
-    Manifest,
-    Options['instances'] extends Record<string, InstanceMethod>
-      ? Options['instances']
-      : EmptyInstanceMethods,
-    Options['relations'] extends object ? Options['relations'] : Record<never, never>
-  >;
+  InstanceMethods: InstanceMethodsFrom<Manifest, InstanceMethods, RelationFields>;
   /**
    * Static methods with correctly typed `this` context.
    */
-  StaticMethods: StaticMethodsFrom<
-    Manifest,
-    Options['statics'] extends MethodRecord ? Options['statics'] : EmptyRecord,
-    Options['instances'] extends Record<string, InstanceMethod>
-      ? Options['instances']
-      : EmptyInstanceMethods,
-    Options['relations'] extends object ? Options['relations'] : Record<never, never>
-  >;
+  StaticMethods: StaticMethodsFrom<Manifest, StaticMethods, InstanceMethods, RelationFields>;
 };
 
 /**
