@@ -1,0 +1,63 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install PostgreSQL client tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Prepare PostgreSQL database
+        env:
+          PGPASSWORD: postgres
+        run: |
+          until pg_isready -h localhost -U postgres; do sleep 1; done
+
+          psql -h localhost -U postgres -c "DROP ROLE IF EXISTS rev_dal_test_user;"
+          psql -h localhost -U postgres -c "DROP DATABASE IF EXISTS rev_dal_test WITH (FORCE);"
+
+          psql -h localhost -U postgres -c "CREATE ROLE rev_dal_test_user LOGIN PASSWORD 'rev_dal_password';"
+          psql -h localhost -U postgres -c "CREATE DATABASE rev_dal_test OWNER rev_dal_test_user;"
+          psql -h localhost -U postgres -d rev_dal_test -c "CREATE EXTENSION IF NOT EXISTS \"pgcrypto\";"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit + integration tests
+        env:
+          REV_DAL_TEST_DATABASE_URL: postgres://rev_dal_test_user:rev_dal_password@localhost:5432/rev_dal_test
+        run: npm test
+
+      - name: Run type tests
+        run: npm run test:types
