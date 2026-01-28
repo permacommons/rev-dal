@@ -1,0 +1,5 @@
+- [ ] Add DAL helper methods for revision workflows: `getAllRevisions(id)` and `getRevisionByRevId(revId, id)`.
+- [ ] Add a DAL helper for "current revisions only" queries (e.g., `current()` / `filterCurrent()`).
+- [ ] Consider a lightweight UserRole model helper to replace raw SQL role lookups/inserts/deletes in consuming apps.
+- [ ] Evaluate whether to expose a `count()` helper on FilterWhereBuilder for common COUNT(*) queries.
+- [ ] Review JSONB/search helpers (ILIKE/JSONB array queries) to decide whether DAL should add primitives or leave as raw SQL.
