@@ -373,8 +373,9 @@ Every manifest-based model ships a typed query entry point:
 
 - **`Model.filterWhere(literal)`** – Typed builder defined in `rev-dal/lib/filter-where`. Features include:
   - Typed predicate literals keyed by manifest fields.
-  - Operator helpers exposed via `Model.ops` (`neq`, `gt/gte/lt/lte`, `in/notIn`, `between/notBetween`, `containsAll`, `containsAny`, `jsonContains`, `not`).
+  - Operator helpers exposed via `Model.ops` (`neq`, `gt/gte/lt/lte`, `in/notIn`, `between/notBetween`, `containsAll`, `containsAny`, `jsonContains`, `not`, `like/ilike/notLike/notIlike`).
   - Automatic revision guards (`_old_rev_of IS NULL`, `_rev_deleted = false`) with opt-outs (`includeDeleted()`, `includeStale()`).
+  - Revision history helpers: `getAllRevisions(documentId)` returns all revisions (current + archived), `getRevisionByRevId(revId, documentId)` finds a specific revision.
   - Fluent chaining (`and`, `or`, `revisionData`, `orderBy`, `orderByRelation`, `limit`, `offset`, `getJoin`, `whereRelated`, `whereIn`, `chronologicalFeed`, `delete`, `count`, `average`, `groupBy`, `aggregateGrouped`).
   - Promise-like behaviour so `await Model.filterWhere({ ... })` works without `.run()`.
 
@@ -413,6 +414,21 @@ const avgPrices = await Product.filterWhere({})
   .groupBy('category')
   .aggregateGrouped('AVG', { aggregateField: 'price' });
 // Returns: Map<string, number> { 'electronics' => 299.99, 'books' => 19.99, ... }
+
+// String pattern matching with LIKE/ILIKE operators
+const { ilike, notLike } = WikiPage.ops;
+const searchResults = await WikiPage.filterWhere({ slug: ilike(`%${query}%`) }).run();
+const nonMetaPages = await WikiPage.filterWhere({ slug: notLike('meta/%') }).count();
+
+// Revision history lookups
+const allRevisions = await WikiPage.filterWhere({})
+  .getAllRevisions(page.id)
+  .orderBy('_revDate', 'DESC')
+  .run();
+
+const specificRevision = await WikiPage.filterWhere({})
+  .getRevisionByRevId(revId, page.id)
+  .first();
 ```
 
 ### Grouped Aggregations

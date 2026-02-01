@@ -89,6 +89,10 @@ type JsonObjectKeys<T> = {
   [K in keyof T]-?: NonNullable<T[K]> extends JsonObject ? K : never;
 }[keyof T];
 
+type StringKeys<T> = {
+  [K in keyof T]-?: NonNullable<T[K]> extends string ? K : never;
+}[keyof T];
+
 type RevisionLiteral = FilterWhereLiteral<
   RevisionDataRecord,
   FilterWhereOperators<RevisionDataRecord>
@@ -414,6 +418,58 @@ function createOperators<TRecord extends JsonObject>(): FilterWhereOperators<TRe
       };
       return operator;
     },
+    ilike<K extends StringKeys<TRecord>>(pattern: string): InternalFilterOperator<K, string> {
+      const operator: InternalFilterOperator<K, string> = {
+        [FILTER_OPERATOR_TOKEN]: true,
+        __allowedKeys: null as unknown as K,
+        value: pattern,
+        build({ builder, field, mutate }) {
+          return mutate
+            ? builder._addWhereCondition(field, 'ILIKE', pattern)
+            : builder._createPredicate(field, 'ILIKE', pattern);
+        },
+      };
+      return operator;
+    },
+    like<K extends StringKeys<TRecord>>(pattern: string): InternalFilterOperator<K, string> {
+      const operator: InternalFilterOperator<K, string> = {
+        [FILTER_OPERATOR_TOKEN]: true,
+        __allowedKeys: null as unknown as K,
+        value: pattern,
+        build({ builder, field, mutate }) {
+          return mutate
+            ? builder._addWhereCondition(field, 'LIKE', pattern)
+            : builder._createPredicate(field, 'LIKE', pattern);
+        },
+      };
+      return operator;
+    },
+    notLike<K extends StringKeys<TRecord>>(pattern: string): InternalFilterOperator<K, string> {
+      const operator: InternalFilterOperator<K, string> = {
+        [FILTER_OPERATOR_TOKEN]: true,
+        __allowedKeys: null as unknown as K,
+        value: pattern,
+        build({ builder, field, mutate }) {
+          return mutate
+            ? builder._addWhereCondition(field, 'NOT LIKE', pattern)
+            : builder._createPredicate(field, 'NOT LIKE', pattern);
+        },
+      };
+      return operator;
+    },
+    notIlike<K extends StringKeys<TRecord>>(pattern: string): InternalFilterOperator<K, string> {
+      const operator: InternalFilterOperator<K, string> = {
+        [FILTER_OPERATOR_TOKEN]: true,
+        __allowedKeys: null as unknown as K,
+        value: pattern,
+        build({ builder, field, mutate }) {
+          return mutate
+            ? builder._addWhereCondition(field, 'NOT ILIKE', pattern)
+            : builder._createPredicate(field, 'NOT ILIKE', pattern);
+        },
+      };
+      return operator;
+    },
   } satisfies FilterWhereOperators<TRecord>;
 }
 
@@ -562,6 +618,35 @@ class FilterWhereBuilder<
 
   includeSensitive(fields: string | string[]): this {
     this._builder.includeSensitive(fields);
+    return this;
+  }
+
+  /**
+   * Get all revisions of a document (current + archived) ordered by revision date.
+   *
+   * This bypasses standard revision filtering to include stale and deleted revisions.
+   *
+   * @param documentId The document ID to retrieve revisions for
+   */
+  getAllRevisions(documentId: string): this {
+    this._includeStale = true;
+    this._includeDeleted = true;
+    this._builder.getAllRevisions(documentId);
+    return this;
+  }
+
+  /**
+   * Find a specific revision by its revision ID within a document's history.
+   *
+   * @param revId The revision ID to find
+   * @param documentId The document ID the revision belongs to
+   */
+  getRevisionByRevId(revId: string, documentId: string): this {
+    this._includeStale = true;
+    this._includeDeleted = true;
+    this._builder._addWhereCondition('_rev_id', '=', revId);
+    this._builder.getAllRevisions(documentId);
+    this._builder.limit(1);
     return this;
   }
 

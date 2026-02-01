@@ -168,6 +168,10 @@ type JsonObjectKeys<T> = {
   [K in keyof T]-?: NonNullable<T[K]> extends JsonObject ? K : never;
 }[keyof T];
 
+type StringKeys<T> = {
+  [K in keyof T]-?: NonNullable<T[K]> extends string ? K : never;
+}[keyof T];
+
 type NonEmptyArray<T> = readonly [T, ...T[]] | [T, ...T[]];
 
 /**
@@ -243,6 +247,10 @@ export interface FilterWhereOperators<TRecord extends JsonObject> {
   jsonContains<K extends JsonObjectKeys<TRecord>>(
     value: JsonObject
   ): FilterWhereOperator<K, JsonObject>;
+  ilike<K extends StringKeys<TRecord>>(pattern: string): FilterWhereOperator<K, string>;
+  like<K extends StringKeys<TRecord>>(pattern: string): FilterWhereOperator<K, string>;
+  notLike<K extends StringKeys<TRecord>>(pattern: string): FilterWhereOperator<K, string>;
+  notIlike<K extends StringKeys<TRecord>>(pattern: string): FilterWhereOperator<K, string>;
 }
 
 /**
@@ -379,6 +387,19 @@ export interface FilterWhereQueryBuilder<
   includeStale(): FilterWhereQueryBuilder<TData, TVirtual, TInstance, TRelations>;
   includeSensitive(
     fields: string | string[]
+  ): FilterWhereQueryBuilder<TData, TVirtual, TInstance, TRelations>;
+  /**
+   * Get all revisions of a document (current + archived) ordered by revision date.
+   */
+  getAllRevisions(
+    documentId: string
+  ): FilterWhereQueryBuilder<TData, TVirtual, TInstance, TRelations>;
+  /**
+   * Find a specific revision by its revision ID within a document's history.
+   */
+  getRevisionByRevId(
+    revId: string,
+    documentId: string
   ): FilterWhereQueryBuilder<TData, TVirtual, TInstance, TRelations>;
   orderBy(
     field: Extract<keyof TData, string> | string,
