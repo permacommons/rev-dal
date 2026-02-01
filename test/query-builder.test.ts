@@ -1217,3 +1217,149 @@ test('FilterWhereBuilder.aggregateGrouped applies revision filters', async () =>
   assert.ok(calls[0]?.sql?.includes('_old_rev_of IS'));
   assert.ok(calls[0]?.sql?.includes('_rev_deleted'));
 });
+
+test('FilterWhereBuilder.getAllRevisions enables stale/deleted and delegates to QueryBuilder', () => {
+  type Data = { id: string; title: string };
+  type Instance = ModelInstance<Data, JsonObject>;
+
+  const { qb } = createQueryBuilderHarness<Data, JsonObject, Instance, string>({
+    tableName: 'pages',
+  });
+
+  const builder = new FilterWhereBuilder<Data, JsonObject, Instance, string>(qb, true);
+
+  const result = builder.getAllRevisions('doc-123');
+
+  assert.strictEqual(result, builder, 'getAllRevisions should return builder for chaining');
+
+  const groupPredicate = qb._where.find(
+    predicate => predicate.type === 'group' && predicate.conjunction === 'OR'
+  );
+  assert.ok(
+    groupPredicate,
+    'Expected OR group predicate for id = doc-123 OR _old_rev_of = doc-123'
+  );
+
+  if (groupPredicate?.type === 'group') {
+    assert.strictEqual(groupPredicate.predicates.length, 2);
+    const [idPredicate, oldRevPredicate] = groupPredicate.predicates;
+    if (idPredicate?.type === 'basic' && oldRevPredicate?.type === 'basic') {
+      assert.strictEqual(idPredicate.column, 'id');
+      assert.strictEqual(idPredicate.value, 'doc-123');
+      assert.strictEqual(oldRevPredicate.column, '_old_rev_of');
+      assert.strictEqual(oldRevPredicate.value, 'doc-123');
+    } else {
+      assert.fail('Expected basic predicates in OR group');
+    }
+  }
+});
+
+test('FilterWhereBuilder.getRevisionByRevId filters by revId and documentId', () => {
+  type Data = { id: string; title: string };
+  type Instance = ModelInstance<Data, JsonObject>;
+
+  const { qb } = createQueryBuilderHarness<Data, JsonObject, Instance, string>({
+    tableName: 'pages',
+  });
+
+  const builder = new FilterWhereBuilder<Data, JsonObject, Instance, string>(qb, true);
+
+  const result = builder.getRevisionByRevId('rev-456', 'doc-123');
+
+  assert.strictEqual(result, builder, 'getRevisionByRevId should return builder for chaining');
+
+  const revIdPredicate = qb._where.find(
+    predicate => predicate.type === 'basic' && predicate.column === '_rev_id'
+  );
+  assert.ok(revIdPredicate, 'Expected predicate for _rev_id');
+  if (revIdPredicate?.type === 'basic') {
+    assert.strictEqual(revIdPredicate.value, 'rev-456');
+  }
+
+  const groupPredicate = qb._where.find(
+    predicate => predicate.type === 'group' && predicate.conjunction === 'OR'
+  );
+  assert.ok(groupPredicate, 'Expected OR group predicate for document id');
+
+  assert.strictEqual(qb._limit, 1, 'getRevisionByRevId should set limit to 1');
+});
+
+test('FilterWhere ilike operator builds ILIKE predicate', () => {
+  type Data = { id: string; slug: string };
+  type Instance = ModelInstance<Data, JsonObject>;
+
+  const { qb } = createQueryBuilderHarness<Data, JsonObject, Instance, string>();
+  const builder = new FilterWhereBuilder<Data, JsonObject, Instance, string>(qb, false);
+  const ops = createOperators<Data>();
+
+  builder.and({ slug: ops.ilike('%test%') });
+
+  assert.strictEqual(qb._where.length, 1);
+  const predicate = qb._where[0];
+  if (predicate?.type !== 'basic') {
+    assert.fail('Expected basic predicate for ilike');
+  }
+  assert.strictEqual(predicate.column, 'slug');
+  assert.strictEqual(predicate.operator, 'ILIKE');
+  assert.strictEqual(predicate.value, '%test%');
+});
+
+test('FilterWhere like operator builds LIKE predicate', () => {
+  type Data = { id: string; slug: string };
+  type Instance = ModelInstance<Data, JsonObject>;
+
+  const { qb } = createQueryBuilderHarness<Data, JsonObject, Instance, string>();
+  const builder = new FilterWhereBuilder<Data, JsonObject, Instance, string>(qb, false);
+  const ops = createOperators<Data>();
+
+  builder.and({ slug: ops.like('test%') });
+
+  assert.strictEqual(qb._where.length, 1);
+  const predicate = qb._where[0];
+  if (predicate?.type !== 'basic') {
+    assert.fail('Expected basic predicate for like');
+  }
+  assert.strictEqual(predicate.column, 'slug');
+  assert.strictEqual(predicate.operator, 'LIKE');
+  assert.strictEqual(predicate.value, 'test%');
+});
+
+test('FilterWhere notLike operator builds NOT LIKE predicate', () => {
+  type Data = { id: string; slug: string };
+  type Instance = ModelInstance<Data, JsonObject>;
+
+  const { qb } = createQueryBuilderHarness<Data, JsonObject, Instance, string>();
+  const builder = new FilterWhereBuilder<Data, JsonObject, Instance, string>(qb, false);
+  const ops = createOperators<Data>();
+
+  builder.and({ slug: ops.notLike('meta/%') });
+
+  assert.strictEqual(qb._where.length, 1);
+  const predicate = qb._where[0];
+  if (predicate?.type !== 'basic') {
+    assert.fail('Expected basic predicate for notLike');
+  }
+  assert.strictEqual(predicate.column, 'slug');
+  assert.strictEqual(predicate.operator, 'NOT LIKE');
+  assert.strictEqual(predicate.value, 'meta/%');
+});
+
+test('FilterWhere notIlike operator builds NOT ILIKE predicate', () => {
+  type Data = { id: string; slug: string };
+  type Instance = ModelInstance<Data, JsonObject>;
+
+  const { qb } = createQueryBuilderHarness<Data, JsonObject, Instance, string>();
+  const builder = new FilterWhereBuilder<Data, JsonObject, Instance, string>(qb, false);
+  const ops = createOperators<Data>();
+
+  builder.and({ slug: ops.notIlike('%TEST%') });
+
+  assert.strictEqual(qb._where.length, 1);
+  const predicate = qb._where[0];
+  if (predicate?.type !== 'basic') {
+    assert.fail('Expected basic predicate for notIlike');
+  }
+  assert.strictEqual(predicate.column, 'slug');
+  assert.strictEqual(predicate.operator, 'NOT ILIKE');
+  assert.strictEqual(predicate.value, '%TEST%');
+});
