@@ -378,6 +378,7 @@ Every manifest-based model ships a typed query entry point:
   - Revision history helpers: `getAllRevisions(documentId)` returns all revisions (current + archived), `getRevisionByRevId(revId, documentId)` finds a specific revision.
   - Fluent chaining (`and`, `or`, `revisionData`, `orderBy`, `orderByRelation`, `limit`, `offset`, `getJoin`, `whereRelated`, `whereIn`, `chronologicalFeed`, `delete`, `count`, `average`, `groupBy`, `aggregateGrouped`).
   - Promise-like behaviour so `await Model.filterWhere({ ... })` works without `.run()`.
+  - Input safety: `limit`/`offset` accept only non-negative integers and sort directions only `ASC`/`DESC` (case-insensitive); anything else throws a `TypeError`. An empty `whereIn(field, [])` or `ops.containsAny([])` matches no rows rather than dropping the filter.
 
 Example:
 
@@ -429,6 +430,16 @@ const allRevisions = await WikiPage.filterWhere({})
 const specificRevision = await WikiPage.filterWhere({})
   .getRevisionByRevId(revId, page.id)
   .first();
+```
+
+### Deleting records
+
+- `delete()` requires at least one predicate; an unfiltered builder throws instead of emptying the table. `deleteById(id)` on a `filterWhere` builder also respects the builder's predicates.
+- On models with revision tracking, the normal delete is the soft `deleteAllRevisions(user)`. Hard deletes (`filterWhere(...).delete()`, `deleteById()`, `Model.delete(id)`, `instance.delete()`) throw unless you pass `{ purge: true }`. A purge permanently removes the matched documents **and** their archived revisions:
+
+```ts
+await doc.deleteAllRevisions(user);                // soft delete (keeps history)
+await Thing.delete(thingId, { purge: true });      // permanent, removes all revisions
 ```
 
 ### Grouped Aggregations

@@ -3,6 +3,7 @@ import type Model from './model.js';
 import type { ModelRuntime } from './model.js';
 import type {
   DataAccessLayer,
+  DeleteOptions,
   JsonObject,
   ModelConstructor,
   ModelInstance,
@@ -16,6 +17,44 @@ type IncrementResult<TRow extends JsonObject> = {
   rowCount: number;
   rows: TRow[];
 };
+
+type SortDirection = 'ASC' | 'DESC';
+
+/**
+ * Validate a LIMIT/OFFSET value. These are interpolated into SQL, so anything
+ * other than a non-negative safe integer is rejected rather than coerced.
+ *
+ * @param value Candidate row count
+ * @param clause Clause name used in the error message
+ * @returns The validated count
+ */
+function assertRowCount(value: unknown, clause: 'LIMIT' | 'OFFSET'): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(
+      `QueryBuilder ${clause} must be a non-negative integer; received ${JSON.stringify(value) ?? String(value)}.`
+    );
+  }
+  return value;
+}
+
+/**
+ * Validate and normalize a sort direction. Directions are interpolated into
+ * SQL, so only `ASC` and `DESC` (case-insensitive) are accepted.
+ *
+ * @param direction Candidate sort direction
+ * @returns Upper-cased direction
+ */
+function normalizeSortDirection(direction: unknown): SortDirection {
+  if (typeof direction === 'string') {
+    const upper = direction.toUpperCase();
+    if (upper === 'ASC' || upper === 'DESC') {
+      return upper;
+    }
+  }
+  throw new TypeError(
+    `QueryBuilder sort direction must be 'ASC' or 'DESC'; received ${JSON.stringify(direction) ?? String(direction)}.`
+  );
+}
 
 /**
  * Convert a database row with snake_case keys to the model's camelCase schema keys.
@@ -407,7 +446,14 @@ class QueryBuilder<
    * @returns {QueryBuilder} This instance for chaining
    */
   whereIn(field: string, values: unknown[], { cast }: { cast?: string } = {}): this {
-    if (!Array.isArray(values) || values.length === 0) {
+    if (!Array.isArray(values)) {
+      throw new TypeError('QueryBuilder.whereIn requires an array of values.');
+    }
+
+    // Membership in an empty set is always false, so match no rows rather
+    // than silently dropping the filter.
+    if (values.length === 0) {
+      this._where.push(this._createMatchNothingPredicate());
       return this;
     }
 
@@ -444,7 +490,8 @@ class QueryBuilder<
    * @param direction - Sort direction (ASC/DESC)
    * @returns {QueryBuilder} This instance for chaining
    */
-  orderBy(field, direction = 'ASC') {
+  orderBy(field, direction: SortDirection = 'ASC') {
+    const normalizedDirection = normalizeSortDirection(direction);
     let expression = field;
     if (typeof field === 'string' && !field.includes('(')) {
       const { table, column } = this._splitFieldReference(field);
@@ -455,11 +502,12 @@ class QueryBuilder<
         expression = resolvedColumn;
       }
     }
-    this._orderBy.push(`${expression} ${direction.toUpperCase()}`);
+    this._orderBy.push(`${expression} ${normalizedDirection}`);
     return this;
   }
 
-  orderByRelation(relationName: string, field: string, direction = 'ASC') {
+  orderByRelation(relationName: string, field: string, direction: SortDirection = 'ASC') {
+    const normalizedDirection = normalizeSortDirection(direction);
     const joinInfo = this._getJoinInfo(relationName);
     if (!joinInfo) {
       debug.db(`Warning: Unknown relation '${relationName}' for table '${this.tableName}'`);
@@ -477,27 +525,27 @@ class QueryBuilder<
     }
 
     const column = this._normalizeColumnName(field);
-    this._orderBy.push(`${targetTable}.${column} ${direction.toUpperCase()}`);
+    this._orderBy.push(`${targetTable}.${column} ${normalizedDirection}`);
     return this;
   }
 
   /**
    * Add LIMIT clause
-   * @param count - Limit count
+   * @param count - Limit count (non-negative integer), or `null` to clear it
    * @returns {QueryBuilder} This instance for chaining
    */
-  limit(count) {
-    this._limit = count;
+  limit(count: number | null) {
+    this._limit = count === null ? null : assertRowCount(count, 'LIMIT');
     return this;
   }
 
   /**
    * Add OFFSET clause
-   * @param count - Offset count
+   * @param count - Offset count (non-negative integer), or `null` to clear it
    * @returns {QueryBuilder} This instance for chaining
    */
-  offset(count) {
-    this._offset = count;
+  offset(count: number | null) {
+    this._offset = count === null ? null : assertRowCount(count, 'OFFSET');
     return this;
   }
 
@@ -1441,12 +1489,20 @@ class QueryBuilder<
   }
 
   /**
-   * Delete records matching the query
-   * @returns {Promise<Object>} Delete result
+   * Delete records matching the query.
+   *
+   * Requires at least one predicate, so an unfiltered builder cannot wipe the
+   * table. On models with revision tracking this is a permanent hard delete and
+   * must be requested explicitly with `{ purge: true }`; matching documents are
+   * removed together with their archived revisions. Use `deleteAllRevisions()`
+   * for the usual soft delete.
+   *
+   * @param options - Delete options
+   * @returns Number of rows deleted
    */
-  async delete(): Promise<number> {
+  async delete(options: DeleteOptions = {}): Promise<number> {
+    const { sql, params } = this._buildDeleteQuery(options);
     try {
-      const { sql, params } = this._buildDeleteQuery();
       const result = await this.dal.query(sql, params);
       return typeof result.rowCount === 'number' ? result.rowCount : 0;
     } catch (error) {
@@ -1455,18 +1511,57 @@ class QueryBuilder<
   }
 
   /**
-   * Delete a record by ID
+   * Delete a record by ID, ignoring any predicates on this builder.
+   *
+   * On models with revision tracking this requires `{ purge: true }` and also
+   * removes the document's archived revisions.
+   *
    * @param id - Record ID
-   * @returns {Promise<Object>} Delete result
+   * @param options - Delete options
+   * @returns Number of rows deleted
    */
-  async deleteById(id: string): Promise<number> {
+  async deleteById(id: string, options: DeleteOptions = {}): Promise<number> {
+    const hasRevisions = this._hasRevisionFields();
+    if (hasRevisions) {
+      this._assertPurgeAllowed(options, 'deleteById');
+    }
+
+    const query = hasRevisions
+      ? `DELETE FROM ${this.tableName} WHERE id = $1 OR _old_rev_of = $1`
+      : `DELETE FROM ${this.tableName} WHERE id = $1`;
+
     try {
-      const query = `DELETE FROM ${this.tableName} WHERE id = $1`;
       const result = await this.dal.query(query, [id]);
       return typeof result.rowCount === 'number' ? result.rowCount : 0;
     } catch (error) {
       throw convertPostgreSQLError(error);
     }
+  }
+
+  /**
+   * Whether the model backing this builder carries revision fields.
+   * @private
+   */
+  _hasRevisionFields(): boolean {
+    const schema = (this.modelClass as { schema?: Record<string, unknown> } | undefined)?.schema;
+    return Boolean(schema && Object.prototype.hasOwnProperty.call(schema, '_revID'));
+  }
+
+  /**
+   * Throw unless a hard delete on a revision-tracked table was requested explicitly.
+   * @private
+   */
+  _assertPurgeAllowed(options: DeleteOptions, method: string): void {
+    if (options?.purge === true) {
+      return;
+    }
+
+    throw new Error(
+      `QueryBuilder.${method} refused to hard-delete from '${this.tableName}', which uses ` +
+        'revision tracking; this would permanently erase revision history. Use ' +
+        'deleteAllRevisions(user) to soft-delete, or pass { purge: true } to permanently ' +
+        'remove the matching documents and all of their revisions.'
+    );
   }
 
   /**
@@ -1576,6 +1671,14 @@ class QueryBuilder<
     }
 
     return predicate;
+  }
+
+  /**
+   * Predicate that matches no rows (e.g. membership in an empty set).
+   * @private
+   */
+  _createMatchNothingPredicate(): RawPredicate {
+    return { type: 'raw', sql: 'FALSE' };
   }
 
   _resolvePredicateColumn(tableReference, column) {
@@ -1882,15 +1985,27 @@ class QueryBuilder<
    * @returns {{ sql: string, params: Array }} SQL query and parameters
    * @private
    */
-  _buildDeleteQuery() {
-    let query = `DELETE FROM ${this.tableName}`;
-
+  _buildDeleteQuery(options: DeleteOptions = {}) {
     const where = this._buildWhereClause();
-    if (where.sql) {
-      query += ' WHERE ' + where.sql;
+    if (!where.sql) {
+      throw new Error(
+        'QueryBuilder.delete requires a WHERE clause to avoid deleting every row in the table.'
+      );
     }
 
-    return { sql: query, params: where.params };
+    if (this._hasRevisionFields()) {
+      this._assertPurgeAllowed(options, 'delete');
+
+      // Purge the matched documents together with their archived revisions so
+      // no orphaned history rows are left behind.
+      const query =
+        `WITH purged AS (SELECT id FROM ${this.tableName} WHERE ${where.sql}) ` +
+        `DELETE FROM ${this.tableName} ` +
+        'WHERE id IN (SELECT id FROM purged) OR _old_rev_of IN (SELECT id FROM purged)';
+      return { sql: query, params: where.params };
+    }
+
+    return { sql: `DELETE FROM ${this.tableName} WHERE ${where.sql}`, params: where.params };
   }
 
   /**
@@ -2003,12 +2118,12 @@ class QueryBuilder<
   async sample(count = 1): Promise<TInstance[]> {
     // Add ORDER BY RANDOM() and LIMIT to get random sample
     this._orderBy = ['RANDOM()'];
-    this._limit = count;
+    this._limit = assertRowCount(count, 'LIMIT');
 
     const results = await this.run();
     return results;
   }
 }
 
-export { QueryBuilder };
+export { QueryBuilder, normalizeSortDirection };
 export default QueryBuilder;
