@@ -106,6 +106,34 @@ export class ConstraintError extends DALError {
   }
 }
 
+export interface RevisionConflictDetails {
+  documentId: string | null;
+  expectedRevId: string | null;
+  currentRevId: string | null;
+}
+
+/**
+ * Revision conflict error
+ *
+ * Thrown when saving a new revision of a document whose stored revision is no
+ * longer the one this copy was loaded from, i.e. someone else saved a revision
+ * in the meantime. Nothing is written. Callers decide how to resolve it: show
+ * an edit-conflict view, or reload the document and reapply the change.
+ */
+export class RevisionConflictError extends DALError {
+  documentId: string | null;
+  expectedRevId: string | null;
+  currentRevId: string | null;
+
+  constructor(message: string, details: RevisionConflictDetails) {
+    super(message, 'REVISION_CONFLICT');
+    this.name = 'RevisionConflictError';
+    this.documentId = details.documentId;
+    this.expectedRevId = details.expectedRevId;
+    this.currentRevId = details.currentRevId;
+  }
+}
+
 export interface DuplicateSlugPayload {
   slug: {
     name: string | null;
@@ -141,6 +169,10 @@ export class DuplicateSlugNameError extends DALError {
  * @returns Converted DAL error
  */
 export function convertPostgreSQLError(pgError: unknown): DALError {
+  if (pgError instanceof DALError) {
+    return pgError;
+  }
+
   if (!pgError || typeof pgError !== 'object') {
     return new DALError('Unknown error');
   }
@@ -200,6 +232,7 @@ const errors = {
   TransactionError,
   QueryError,
   ConstraintError,
+  RevisionConflictError,
   DuplicateSlugNameError,
   convertPostgreSQLError,
 } as const;

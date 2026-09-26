@@ -693,6 +693,45 @@ Models with `hasRevisions: true` gain revision metadata fields and helpers:
 `_revSummary` is disabled by default. If you want it, add the column in your
 schema and call `setRevisionSummaryEnabled(true)` at bootstrap.
 
+### Saving revisions and edit conflicts
+
+`newRevision()` only prepares the new revision in memory. The following `save()`
+updates the current row and archives the previous revision in one transaction, so
+a failure leaves no partial history. `deleteAllRevisions()` and `saveAll()` are
+likewise all-or-nothing.
+
+Saves use optimistic concurrency: the update only applies if the stored revision
+is still the one this copy was loaded from. If someone else saved a revision in
+the meantime, `save()` writes nothing and throws `RevisionConflictError`
+(`code: 'REVISION_CONFLICT'`), carrying `documentId`, `expectedRevId` and
+`currentRevId`. The DAL never retries automatically, since re-applying a stale
+edit would overwrite the other change; the application decides:
+
+```ts
+import { RevisionConflictError } from 'rev-dal/lib/errors';
+
+const rev = await page.newRevision(user, { tags: ['edit'] });
+rev.body = newBody;
+try {
+  await rev.save();
+} catch (error) {
+  if (error instanceof RevisionConflictError) {
+    // e.g. show an edit-conflict view, or reload and reapply the change
+  }
+  throw error;
+}
+```
+
+To include these writes in a larger transaction, pass the client from
+`dal.transaction()`: `save({ transaction: client })`,
+`saveAll(joinOptions, { transaction: client })` or
+`deleteAllRevisions(user, { transaction: client })`. The caller then owns
+COMMIT/ROLLBACK.
+
+Errors raised by the DAL itself (`ValidationError`, `DocumentNotFound`,
+`RevisionConflictError`, …) reach the caller with their own type; only raw
+PostgreSQL errors are converted.
+
 ## Multilingual Strings
 
 The DAL provides runtime-validated multilingual string schemas via `mlString` (imported from `rev-dal/lib/ml-string`). These enforce a security model that distinguishes plain text from HTML content at write time.

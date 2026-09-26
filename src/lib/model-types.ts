@@ -81,7 +81,7 @@ export interface DeleteOptions extends TransactionOptions {
   purge?: boolean;
 }
 
-export interface RevisionMetadata {
+export interface RevisionMetadata extends TransactionOptions {
   tags?: string[];
   date?: Date;
 }
@@ -595,5 +595,6 @@ export interface DataAccessLayer {
   ): ModelConstructor<TData, TVirtual>;
   getRegisteredModels(): Map<string, ModelConstructor>;
   getModelRegistry?(): unknown;
+  transaction?<T>(callback: (client: PoolClient) => Promise<T>): Promise<T>;
   pool?: Pool;
 }

@@ -11,6 +11,7 @@ import type {
 } from './model-types.js';
 import type { JoinOptions } from './query-builder.js';
 import { isRevisionSummaryEnabled } from './runtime.js';
+import { type QueryExecutor, runInTransaction } from './transaction.js';
 import types from './type.js';
 
 /**
@@ -76,7 +77,7 @@ export interface RevisionHelpers {
   ): (
     this: TInstance,
     user: RevisionActor | null,
-    options?: { tags?: string[] }
+    options?: { tags?: string[]; transaction?: QueryExecutor | null }
   ) => Promise<VersionedModelInstance<TData, TVirtual>>;
   getNotStaleOrDeletedGetHandler<
     TData extends JsonObject,
@@ -135,6 +136,16 @@ const staleError = new Error('Outdated revision.');
 staleError.name = 'RevisionStaleError';
 
 type RevisionUserInput = RevisionActor | null | undefined;
+
+/**
+ * Revision-related instance state kept by the base `Model`.
+ */
+type RevisionSaveState = {
+  _isNew: boolean;
+  _pendingRevision: { archive: Record<string, unknown>; expectedRevId: string | null } | null;
+  _snapshotSaveState(): unknown;
+  _restoreSaveState(snapshot: unknown): void;
+};
 
 const resolveRevisionUserId = (user: RevisionUserInput): string | null => {
   if (!user) {
@@ -215,13 +226,17 @@ const revision: RevisionHelpers = {
     TInstance extends VersionedModelInstance<TData, TVirtual>,
   >(ModelClass: ModelConstructorLike<TData, TVirtual, TInstance>) {
     /**
-     * Create a new revision by archiving the current revision and preparing
-     * a new one with updated revision metadata
+     * Prepare a new revision of this document with updated revision metadata.
+     *
+     * Nothing is written yet: the next `save()` archives the previous
+     * revision and updates the current row in one transaction, and fails
+     * with `RevisionConflictError` if another revision was saved since this
+     * copy was loaded.
      *
      * @param user - User creating the revision
      * @param options - Revision options
      * @param options.tags - Tags to associate with revision
-     * @returns New revision instance
+     * @returns This instance, stamped with the new revision metadata
      */
     const newRevision = async function (
       this: TInstance,
@@ -229,21 +244,21 @@ const revision: RevisionHelpers = {
       { tags }: { tags?: string[] } = {}
     ) {
       const currentRev = this;
+      const state = currentRev as unknown as RevisionSaveState;
 
-      const oldRevData = { ...currentRev._data } as Record<string, unknown>;
-      (oldRevData as Record<string, unknown>)._old_rev_of = currentRev.id;
-      delete oldRevData.id;
+      // An unsaved document has nothing to archive. If a revision is already
+      // pending, keep its snapshot: it still reflects the stored row.
+      if (!state._isNew && !state._pendingRevision) {
+        const archive = { ...currentRev._data } as Record<string, unknown>;
+        archive._old_rev_of = currentRev.id;
+        delete archive.id;
 
-      const insertFields = Object.keys(oldRevData).filter(key => oldRevData[key] !== undefined);
-      const insertValues = insertFields.map(key => oldRevData[key]);
-      const placeholders = insertFields.map((_, index) => `$${index + 1}`);
-
-      const insertQuery = `
-        INSERT INTO ${ModelClass.tableName} (${insertFields.join(', ')})
-        VALUES (${placeholders.join(', ')})
-      `;
-
-      await ModelClass.dal.query(insertQuery, insertValues);
+        const storedRevId = currentRev._data._rev_id;
+        state._pendingRevision = {
+          archive,
+          expectedRevId: typeof storedRevId === 'string' ? storedRevId : null,
+        };
+      }
 
       const metadataDate = new Date();
       applyRevisionMetadata<TData, TVirtual, TInstance>(currentRev, {
@@ -276,31 +291,45 @@ const revision: RevisionHelpers = {
      * @param user - User performing the deletion
      * @param options - Deletion options
      * @param options.tags - Tags for the deletion (will prepend 'delete')
+     * @param options.transaction - Existing transaction client to join
      * @returns Deletion revision
      */
     const deleteAllRevisions = async function (
       this: TInstance,
       user: RevisionActor | null,
-      { tags = [] }: { tags?: string[] } = {}
+      {
+        tags = [],
+        transaction = null,
+      }: { tags?: string[]; transaction?: QueryExecutor | null } = {}
     ) {
       const id = this.id;
       const deletionTags = ['delete', ...tags];
+      const state = this as unknown as RevisionSaveState;
+      const snapshot = state._snapshotSaveState();
 
-      const rev = await this.newRevision(user, { tags: deletionTags });
+      try {
+        // The deletion revision and the flag on older revisions succeed or fail together
+        return await runInTransaction(ModelClass.dal, transaction, async client => {
+          const rev = await this.newRevision(user, { tags: deletionTags });
 
-      rev._revDeleted = true;
+          rev._revDeleted = true;
 
-      await rev.save();
+          await rev.save({ transaction: client });
 
-      const updateQuery = `
-        UPDATE ${ModelClass.tableName}
-        SET _rev_deleted = true
-        WHERE _old_rev_of = $1
-      `;
+          const updateQuery = `
+            UPDATE ${ModelClass.tableName}
+            SET _rev_deleted = true
+            WHERE _old_rev_of = $1
+          `;
 
-      await ModelClass.dal.query(updateQuery, [id]);
+          await ModelClass.dal.query(updateQuery, [id], client);
 
-      return rev;
+          return rev;
+        });
+      } catch (error) {
+        state._restoreSaveState(snapshot);
+        throw error;
+      }
     };
 
     return deleteAllRevisions;
