@@ -74,14 +74,19 @@ class DataAccessLayer implements DataAccessLayerContract {
       return this;
     }
 
+    const pool = new Pool(this.config as PoolConfig);
     try {
-      this.pool = new Pool(this.config as PoolConfig);
-
-      // Test the connection
-      const client = await this.pool.connect();
-      await client.query('SELECT NOW()');
+      // Test the connection; always hand the client back, discarding it on error
+      const client = await pool.connect();
+      try {
+        await client.query('SELECT NOW()');
+      } catch (queryError) {
+        client.release(queryError instanceof Error ? queryError : true);
+        throw queryError;
+      }
       client.release();
 
+      this.pool = pool;
       this._connected = true;
       debug.db('PostgreSQL connection pool established');
 
@@ -98,6 +103,8 @@ class DataAccessLayer implements DataAccessLayerContract {
 
       return this;
     } catch (error) {
+      // Don't leave a half-initialized pool behind
+      await pool.end().catch(() => undefined);
       const message = error instanceof Error ? error.message : String(error);
       debug.error(`Failed to connect to PostgreSQL: ${message}`);
       debug.error({ error: error instanceof Error ? error : new Error(message) });
@@ -172,6 +179,8 @@ class DataAccessLayer implements DataAccessLayerContract {
    */
   async transaction<T>(callback: (client: PoolClient) => Promise<T>): Promise<T> {
     const client = await this.getConnection();
+    // Set when the client can no longer be trusted, so the pool discards it
+    let releaseError: Error | undefined;
 
     try {
       await client.query('BEGIN');
@@ -184,12 +193,19 @@ class DataAccessLayer implements DataAccessLayerContract {
 
       return result;
     } catch (error) {
-      await client.query('ROLLBACK');
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        // Report the original failure, not the rollback's
+        releaseError =
+          rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError));
+        debug.error(`Transaction rollback failed: ${releaseError.message}`);
+      }
       const message = error instanceof Error ? error.message : String(error);
       debug.db(`Transaction rolled back due to error: ${message}`);
       throw error;
     } finally {
-      client.release();
+      client.release(releaseError);
     }
   }
 

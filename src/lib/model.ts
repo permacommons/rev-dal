@@ -1,6 +1,6 @@
 import isUUID from 'is-uuid';
 
-import { convertPostgreSQLError, DocumentNotFound } from './errors.js';
+import { convertPostgreSQLError, DocumentNotFound, RevisionConflictError } from './errors.js';
 import type {
   DataAccessLayer,
   DeleteOptions,
@@ -13,10 +13,12 @@ import type {
   ModelViewFetchOptions,
   RevisionActor,
   RevisionMetadata,
+  SaveOptions,
 } from './model-types.js';
 import QueryBuilder from './query-builder.js';
 import type { ModelConstructorLike } from './revision.js';
 import revision from './revision.js';
+import { type QueryExecutor, runInTransaction } from './transaction.js';
 
 /**
  * Shape each manifest schema entry must satisfy. The type system extracts the
@@ -158,6 +160,27 @@ function deepClone<T>(value: T): T {
   return value;
 }
 
+/** Column names that are safe to interpolate into SQL. */
+const SAFE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * A revision prepared by `newRevision()` and written by the next `save()`:
+ * a snapshot of the stored row to archive, and the revision ID the stored row
+ * must still have for the save to succeed.
+ */
+interface PendingRevision {
+  archive: Record<string, unknown>;
+  expectedRevId: string | null;
+}
+
+/** Instance state that a failed transactional save restores. */
+interface SaveStateSnapshot {
+  data: Record<string, unknown>;
+  changed: Set<string>;
+  isNew: boolean;
+  pendingRevision: PendingRevision | null;
+}
+
 /**
  * Base Model class
  */
@@ -177,6 +200,7 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
   public _changed: Set<string>;
   public _isNew: boolean;
   public _originalData: Record<string, unknown>;
+  public _pendingRevision: PendingRevision | null = null;
   protected static _views: Map<
     string,
     ModelViewDefinition<ModelInstance<JsonObject, JsonObject>, JsonObject>
@@ -1120,7 +1144,7 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
    * @param options - Save options
    * @returns This instance
    */
-  async save(options = {}) {
+  async save(options: SaveOptions = {}) {
     try {
       // Detect in-place modifications to JSONB fields before validation
       this._detectInPlaceChanges();
@@ -1128,13 +1152,27 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
       // Validate data (may also mark fields as changed if validation transforms them)
       this._validate();
 
-      if (this._isNew) {
+      const pending = this._isNew ? null : this._pendingRevision;
+      if (pending) {
+        // Update the current row and archive the previous revision atomically
+        const snapshot = this._snapshotSaveState();
+        try {
+          await runInTransaction(this.runtime.dal, options.transaction, async client => {
+            await this._update({ ...options, transaction: client }, pending.expectedRevId);
+            await this._insertArchivedRevision(pending.archive, client);
+          });
+        } catch (error) {
+          this._restoreSaveState(snapshot);
+          throw error;
+        }
+      } else if (this._isNew) {
         await this._insert(options);
       } else {
         await this._update(options);
       }
 
       this._isNew = false;
+      this._pendingRevision = null;
       this._changed.clear();
 
       // Refresh original values after successful save to track future in-place modifications
@@ -1163,30 +1201,91 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
    *   When omitted, every declared `through` relation is synchronized.
    * @returns This instance
    */
-  async saveAll(joinOptions = {}) {
-    // First save the main record
-    await this.save();
+  async saveAll(joinOptions = {}, options: SaveOptions = {}) {
+    const snapshot = this._snapshotSaveState();
 
-    // Then handle relationships
-    const relations = this.runtime.getRelations();
+    try {
+      // Save the record and its relations atomically
+      await runInTransaction(this.runtime.dal, options.transaction, async client => {
+        await this.save({ ...options, transaction: client });
 
-    for (const { name, config } of relations) {
-      // Only handle many-to-many relationships with through tables for now
-      if (config.cardinality !== 'many' || !config.through) continue;
+        const relations = this.runtime.getRelations();
 
-      // Get the related data from this instance
-      const relatedData = this[name];
-      if (!relatedData) continue;
+        for (const { name, config } of relations) {
+          // Only handle many-to-many relationships with through tables for now
+          if (config.cardinality !== 'many' || !config.through) continue;
 
-      // If joinOptions is explicitly provided, only process requested relationships
-      // If joinOptions is empty (default), process all relationships
-      const isExplicitOptions = Object.keys(joinOptions).length > 0;
-      if (isExplicitOptions && !joinOptions[name]) continue;
+          // Get the related data from this instance
+          const relatedData = this[name];
+          if (!relatedData) continue;
 
-      await this._saveManyToManyRelation(name, config, relatedData);
+          // If joinOptions is explicitly provided, only process requested relationships
+          // If joinOptions is empty (default), process all relationships
+          const isExplicitOptions = Object.keys(joinOptions).length > 0;
+          if (isExplicitOptions && !joinOptions[name]) continue;
+
+          await this._saveManyToManyRelation(name, config, relatedData, client);
+        }
+      });
+    } catch (error) {
+      // The transaction rolled back, so the instance must not look saved
+      this._restoreSaveState(snapshot);
+      throw error;
     }
 
     return this;
+  }
+
+  /**
+   * Capture the instance state that a save mutates.
+   * @private
+   */
+  _snapshotSaveState(): SaveStateSnapshot {
+    return {
+      data: { ...this._data },
+      changed: new Set(this._changed),
+      isNew: this._isNew,
+      pendingRevision: this._pendingRevision,
+    };
+  }
+
+  /**
+   * Restore state captured by {@link Model._snapshotSaveState} after a rollback.
+   * @private
+   */
+  _restoreSaveState(snapshot: SaveStateSnapshot): void {
+    this._data = snapshot.data;
+    this._changed = snapshot.changed;
+    this._isNew = snapshot.isNew;
+    this._pendingRevision = snapshot.pendingRevision;
+    this._trackOriginalValues();
+  }
+
+  /**
+   * Insert the archived copy of the previous revision.
+   * @param archive - Row snapshot, with `_old_rev_of` set and no `id`
+   * @param client - Transaction client
+   * @private
+   */
+  async _insertArchivedRevision(archive: Record<string, unknown>, client: QueryExecutor) {
+    const tableName = this.runtime.tableName;
+    const fields = Object.keys(archive).filter(key => archive[key] !== undefined);
+
+    // Column names are interpolated, so only plain identifiers are allowed
+    for (const field of fields) {
+      if (!SAFE_IDENTIFIER.test(field)) {
+        throw new Error(`Invalid field name '${field}' in ${tableName} revision archive.`);
+      }
+    }
+
+    const values = fields.map(key => archive[key]);
+    const placeholders = fields.map((_, index) => `$${index + 1}`);
+    const query = `
+      INSERT INTO ${tableName} (${fields.join(', ')})
+      VALUES (${placeholders.join(', ')})
+    `;
+
+    await this.runtime.dal.query(query, values, client);
   }
 
   /**
@@ -1196,7 +1295,12 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
    * @param relatedData - Array of related model instances or IDs
    * @private
    */
-  async _saveManyToManyRelation(relationName, config, relatedData) {
+  async _saveManyToManyRelation(
+    relationName,
+    config,
+    relatedData,
+    client: QueryExecutor | null = null
+  ) {
     if (!Array.isArray(relatedData)) {
       return;
     }
@@ -1214,8 +1318,11 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
     const sourceBase = getBaseName(this.runtime.tableName);
     const targetBase = getBaseName(config.targetTable);
 
-    const sourceColumn = through.sourceForeignKey || `${sourceBase.replace(/s$/, '')}_id`;
-    const targetColumn = through.targetForeignKey || `${targetBase.replace(/s$/, '')}_id`;
+    // Normalized relations store the join columns as sourceColumn/targetColumn
+    const sourceColumn =
+      through.sourceColumn || through.sourceForeignKey || `${sourceBase.replace(/s$/, '')}_id`;
+    const targetColumn =
+      through.targetColumn || through.targetForeignKey || `${targetBase.replace(/s$/, '')}_id`;
 
     const desiredIds: string[] = [];
     const desiredSet = new Set<string>();
@@ -1235,7 +1342,8 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
     try {
       const existingResult = await this.runtime.dal.query<Record<string, unknown>>(
         `SELECT ${targetColumn} FROM ${joinTableName} WHERE ${sourceColumn} = $1`,
-        [this.id]
+        [this.id],
+        client
       );
       const existingIds = new Set(
         existingResult.rows
@@ -1252,7 +1360,7 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
           WHERE ${sourceColumn} = $1
             AND ${targetColumn} IN (${placeholders})
         `;
-        await this.runtime.dal.query(deleteQuery, deleteParams);
+        await this.runtime.dal.query(deleteQuery, deleteParams, client);
       }
 
       const idsToAdd = desiredIds.filter(id => !existingIds.has(id));
@@ -1273,10 +1381,12 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
           ON CONFLICT (${sourceColumn}, ${targetColumn}) DO NOTHING
         `;
 
-        await this.runtime.dal.query(insertQuery, params);
+        await this.runtime.dal.query(insertQuery, params, client);
       }
     } catch (error) {
-      throw new Error(`Failed to save ${relationName} relation: ${error.message}`);
+      throw new Error(`Failed to save ${relationName} relation: ${error.message}`, {
+        cause: error,
+      });
     }
   }
 
@@ -1520,7 +1630,7 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
    * @param options - Insert options
    * @private
    */
-  async _insert(options) {
+  async _insert(options: SaveOptions = {}) {
     const tableName = this.runtime.tableName;
     const fields = Object.keys(this._data).filter(key => this._data[key] !== undefined);
 
@@ -1543,7 +1653,7 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
       RETURNING *
     `;
 
-    const result = await this.runtime.dal.query(query, values);
+    const result = await this.runtime.dal.query(query, values, options.transaction ?? null);
     Object.assign(this._data, result.rows[0]);
   }
 
@@ -1551,9 +1661,11 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
    * Update existing record
    * @param options - Update options
    * @param options.updateSensitive - Array of sensitive field names to include in update
+   * @param expectedRevId - When set, only update if the stored `_rev_id` still
+   *   matches; otherwise throw {@link RevisionConflictError}
    * @private
    */
-  async _update(options) {
+  async _update(options: SaveOptions = {}, expectedRevId: string | null = null) {
     if (this._changed.size === 0) {
       return; // No changes to save
     }
@@ -1594,15 +1706,38 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
     const values = changedFields.map(key => this._data[key]);
     const setClause = changedFields.map((key, index) => `${key} = $${index + 1}`);
 
+    const client = options.transaction ?? null;
+    const params = [...values, this.id];
+    let whereClause = `id = $${params.length}`;
+    if (expectedRevId) {
+      params.push(expectedRevId);
+      whereClause += ` AND _rev_id = $${params.length}`;
+    }
+
     const query = `
       UPDATE ${tableName}
       SET ${setClause.join(', ')}
-      WHERE id = $${values.length + 1}
+      WHERE ${whereClause}
       RETURNING *
     `;
 
-    const result = await this.runtime.dal.query(query, [...values, this.id]);
+    const result = await this.runtime.dal.query(query, params, client);
     if (result.rows.length === 0) {
+      if (expectedRevId) {
+        const current = await this.runtime.dal.query<{ _rev_id: string }>(
+          `SELECT _rev_id FROM ${tableName} WHERE id = $1`,
+          [this.id],
+          client
+        );
+        if (current.rows.length > 0) {
+          const currentRevId = current.rows[0]._rev_id ?? null;
+          throw new RevisionConflictError(
+            `${tableName} ${this.id} was changed by another revision ` +
+              `(expected ${expectedRevId}, found ${currentRevId}).`,
+            { documentId: this.id ?? null, expectedRevId, currentRevId }
+          );
+        }
+      }
       throw new DocumentNotFound(`${tableName} with id ${this.id} not found`);
     }
 
