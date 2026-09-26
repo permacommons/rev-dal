@@ -73,6 +73,12 @@ export interface SaveOptions extends TransactionOptions {
 
 export interface DeleteOptions extends TransactionOptions {
   soft?: boolean;
+  /**
+   * Required to hard-delete from a model with revision tracking. When set,
+   * matching documents are removed together with their archived revisions.
+   * Prefer `deleteAllRevisions(user)` for the usual soft delete.
+   */
+  purge?: boolean;
 }
 
 export interface RevisionMetadata {
@@ -357,8 +363,8 @@ export interface ModelQueryBuilder<
     value: unknown
   ): ModelQueryBuilder<TData, TVirtual, TInstance, TRelations>;
   groupBy(fields: string | string[]): ModelQueryBuilder<TData, TVirtual, TInstance, TRelations>;
-  delete(): Promise<number>;
-  deleteById(id: string): Promise<number>;
+  delete(options?: DeleteOptions): Promise<number>;
+  deleteById(id: string, options?: DeleteOptions): Promise<number>;
   count(): Promise<number>;
   average(field: string): Promise<number | null>;
   aggregateGrouped(
@@ -460,8 +466,8 @@ export interface FilterWhereQueryBuilder<
     func: 'COUNT' | 'AVG' | 'SUM' | 'MIN' | 'MAX',
     options?: { aggregateField?: string }
   ): Promise<Map<string, number>>;
-  delete(): Promise<number>;
-  deleteById(id: string): Promise<number>;
+  delete(options?: DeleteOptions): Promise<number>;
+  deleteById(id: string, options?: DeleteOptions): Promise<number>;
   chronologicalFeed<K extends Extract<DateKeys<TData>, string>>(
     options: ChronologicalFeedOptions<TData, K>
   ): Promise<ChronologicalFeedPage<NonNullable<TData[K]>, TInstance>>;
@@ -494,7 +500,7 @@ export interface ModelConstructor<
   ): FilterWhereQueryBuilder<TData, TVirtual, TInstance, TRelations>;
   create(data: Partial<TData>, options?: JsonObject): Promise<TInstance>;
   update(id: string, data: Partial<TData>): Promise<TInstance>;
-  delete(id: string): Promise<boolean>;
+  delete(id: string, options?: DeleteOptions): Promise<boolean>;
 
   orderBy(
     field: string,

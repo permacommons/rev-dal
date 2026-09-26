@@ -3,6 +3,7 @@ import isUUID from 'is-uuid';
 import { convertPostgreSQLError, DocumentNotFound } from './errors.js';
 import type {
   DataAccessLayer,
+  DeleteOptions,
   JsonObject,
   ModelConstructor,
   ModelInstance,
@@ -919,8 +920,11 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
   }
 
   /**
-   * Delete a record by ID
+   * Delete a record by ID. Models with revision tracking require
+   * `{ purge: true }`, which also removes the document's archived revisions;
+   * use `deleteAllRevisions(user)` to soft-delete instead.
    * @param id - Record ID
+   * @param options - Delete options
    * @returns Success status
    */
   static async delete<
@@ -930,10 +934,11 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
     TRelations extends string = string,
   >(
     this: ModelConstructor<TData, TVirtual, TInstance, TRelations> & ModelRuntime<TData, TVirtual>,
-    id: string
+    id: string,
+    options: DeleteOptions = {}
   ): Promise<boolean> {
     const query = new QueryBuilder<TData, TVirtual, TInstance, TRelations>(this, this.dal);
-    const result = await query.deleteById(id);
+    const result = await query.deleteById(id, options);
     return result > 0;
   }
 
@@ -951,7 +956,7 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
   >(
     this: ModelConstructor<TData, TVirtual, TInstance, TRelations> & ModelRuntime<TData, TVirtual>,
     field: string,
-    direction = 'ASC'
+    direction: 'ASC' | 'DESC' = 'ASC'
   ) {
     const query = new QueryBuilder<TData, TVirtual, TInstance, TRelations>(this, this.dal);
     return query.orderBy(field, direction);
@@ -1273,19 +1278,23 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
     } catch (error) {
       throw new Error(`Failed to save ${relationName} relation: ${error.message}`);
     }
-  } /*
-   *
-   * Delete this model instance
+  }
+
+  /**
+   * Delete this model instance. Models with revision tracking require
+   * `{ purge: true }`, which also removes the document's archived revisions;
+   * use `deleteAllRevisions(user)` to soft-delete instead.
+   * @param options - Delete options
    * @returns Success status
    */
-  async delete() {
+  async delete(options: DeleteOptions = {}) {
     if (this._isNew) {
       throw new Error('Cannot delete unsaved record');
     }
 
     const runtime = this.runtime;
     const query = new QueryBuilder(runtime, runtime.dal);
-    const result = await query.deleteById(String(this.id));
+    const result = await query.deleteById(String(this.id), options);
     return result > 0;
   }
 

@@ -608,9 +608,8 @@ test('QueryBuilder builds SELECT queries correctly', () => {
   assert.ok(selectSql.includes('FROM test_table'));
   assert.ok(selectSql.includes('WHERE'));
   assert.ok(selectSql.includes('ORDER BY test_table.created_on DESC'));
-  assert.ok(selectSql.includes('LIMIT 10'));
-  assert.ok(selectSql.includes('OFFSET 5'));
-  assert.deepStrictEqual(selectParams, ['test-id']);
+  assert.ok(selectSql.endsWith('LIMIT $2 OFFSET $3'));
+  assert.deepStrictEqual(selectParams, ['test-id', 10, 5]);
 });
 
 test('QueryBuilder builds COUNT queries correctly', () => {

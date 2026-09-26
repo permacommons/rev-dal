@@ -9,6 +9,7 @@ import type {
   ChronologicalFeedOptions,
   ChronologicalFeedPage,
   DateKeys,
+  DeleteOptions,
   FilterWhereJoinSpec,
   FilterWhereLiteral,
   FilterWhereOperators,
@@ -19,7 +20,7 @@ import type {
   NumericKeys,
   RevisionDataRecord,
 } from './model-types.js';
-import QueryBuilder from './query-builder.js';
+import QueryBuilder, { normalizeSortDirection } from './query-builder.js';
 
 /**
  * Shared implementation for the typed {@link ModelConstructor.filterWhere} surface.
@@ -254,7 +255,13 @@ function createOperators<TRecord extends JsonObject>(): FilterWhereOperators<TRe
         value: normalized as unknown as TRecord[K],
         build({ builder, field, mutate }) {
           if (normalized.length === 0) {
-            return null;
+            // Overlap with an empty set is always false: match no rows rather
+            // than silently dropping the filter.
+            const predicate = builder._createMatchNothingPredicate();
+            if (mutate) {
+              builder._where.push(predicate);
+            }
+            return predicate;
           }
           return mutate
             ? builder._addWhereCondition(field, '&&', normalized, { cast: 'text[]' })
@@ -717,7 +724,8 @@ class FilterWhereBuilder<
   async chronologicalFeed<K extends Extract<DateKeys<TData>, string>>(
     options: ChronologicalFeedOptions<TData, K>
   ): Promise<ChronologicalFeedPage<NonNullable<TData[K]>, TInstance>> {
-    const { cursorField, cursor, direction = 'DESC' as const, limit = 10 } = options ?? {};
+    const { cursorField, cursor, direction: rawDirection = 'DESC', limit = 10 } = options ?? {};
+    const direction = normalizeSortDirection(rawDirection);
     const normalizedLimit = Math.max(0, Math.floor(limit));
 
     this._ensureRevisionFilters();
@@ -892,14 +900,28 @@ class FilterWhereBuilder<
     return this.increment(field, { ...options, by: -Math.abs(amount) });
   }
 
-  async delete(): Promise<number> {
+  /**
+   * Delete rows matching the current predicates. Models with revision tracking
+   * require `{ purge: true }`, which also removes the matched documents'
+   * archived revisions; use `deleteAllRevisions(user)` to soft-delete instead.
+   *
+   * @param options Delete options
+   */
+  async delete(options: DeleteOptions = {}): Promise<number> {
     this._ensureRevisionFilters();
-    return this._builder.delete();
+    return this._builder.delete(options);
   }
 
-  async deleteById(id: string): Promise<number> {
-    this._ensureRevisionFilters();
-    return this._builder.deleteById(id);
+  /**
+   * Delete the row with the given ID, provided it also matches the current
+   * predicates. Same revision rules as {@link FilterWhereBuilder.delete}.
+   *
+   * @param id Record ID
+   * @param options Delete options
+   */
+  async deleteById(id: string, options: DeleteOptions = {}): Promise<number> {
+    this._builder._addWhereCondition('id', '=', id);
+    return this.delete(options);
   }
 
   then<TResult1 = TInstance[], TResult2 = never>(
