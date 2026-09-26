@@ -21,8 +21,9 @@ type IncrementResult<TRow extends JsonObject> = {
 type SortDirection = 'ASC' | 'DESC';
 
 /**
- * Validate a LIMIT/OFFSET value. These are interpolated into SQL, so anything
- * other than a non-negative safe integer is rejected rather than coerced.
+ * Validate a LIMIT/OFFSET value. Anything other than a non-negative safe
+ * integer is rejected rather than coerced; callers should parse and clamp
+ * untrusted input (e.g. query strings) before passing it in.
  *
  * @param value Candidate row count
  * @param clause Clause name used in the error message
@@ -1028,7 +1029,9 @@ class QueryBuilder<
     }
 
     if (typeof analysis?.limit === 'number') {
-      limitClause = ` LIMIT ${analysis.limit}`;
+      limitClause = ` LIMIT $${paramIndex}`;
+      params.push(assertRowCount(analysis.limit, 'LIMIT'));
+      paramIndex++;
     }
 
     const whereClause = whereClauses.length > 0 ? ` WHERE ${whereClauses.join(' AND ')}` : '';
@@ -1905,15 +1908,19 @@ class QueryBuilder<
       query += ' ORDER BY ' + qualifiedOrderBy.join(', ');
     }
 
+    // LIMIT/OFFSET are bound as parameters rather than interpolated.
+    const params = [...where.params];
     if (this._limit !== null) {
-      query += ` LIMIT ${this._limit}`;
+      params.push(this._limit);
+      query += ` LIMIT $${params.length}`;
     }
 
     if (this._offset !== null) {
-      query += ` OFFSET ${this._offset}`;
+      params.push(this._offset);
+      query += ` OFFSET $${params.length}`;
     }
 
-    return { sql: query, params: where.params };
+    return { sql: query, params };
   }
 
   /**

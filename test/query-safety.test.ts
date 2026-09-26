@@ -16,7 +16,7 @@ import {
 
 /**
  * Regression tests for query-safety fixes:
- * - LIMIT/OFFSET/sort direction are validated before being interpolated into SQL
+ * - LIMIT/OFFSET are validated and bound as parameters; sort direction is validated
  * - empty `whereIn` / `ops.containsAny` match no rows instead of dropping the filter
  * - deletes require a WHERE clause, and hard deletes on revisioned models require `purge`
  */
@@ -39,7 +39,7 @@ type QueryChain = PromiseLike<Row[]> & {
 
 type LabelModel = {
   filterWhere(literal: JsonObject): QueryChain;
-  ops: { containsAny(value: string[]): unknown };
+  ops: { containsAny(value: string[]): unknown; neq(value: unknown): unknown };
   delete(id: string, options?: JsonObject): Promise<boolean>;
 };
 
@@ -138,6 +138,50 @@ test('limit and offset accept zero and positive integers', async () => {
     ['b', 'c']
   );
   assert.strictEqual((await Labels.filterWhere({}).limit(0).run()).length, 0);
+});
+
+type BuilderInternals = {
+  _builder: {
+    _limit: unknown;
+    _offset: unknown;
+    _buildSelectQuery(): { sql: string; params: unknown[] };
+  };
+};
+
+test('limit and offset are bound as parameters after the WHERE parameters', async () => {
+  await insertLabel('a', []);
+  await insertLabel('b', []);
+  await insertLabel('c', []);
+
+  const makeQuery = () =>
+    Labels.filterWhere({ label: Labels.ops.neq('b') })
+      .orderBy('label')
+      .limit(1)
+      .offset(1);
+
+  const { sql, params } = (makeQuery() as unknown as BuilderInternals)._builder._buildSelectQuery();
+  assert.match(sql, /LIMIT \$2 OFFSET \$3$/);
+  assert.deepStrictEqual(params, ['b', 1, 1]);
+
+  const rows = await makeQuery().run();
+  assert.deepStrictEqual(
+    rows.map(row => row.label),
+    ['c']
+  );
+});
+
+test('LIMIT/OFFSET values that bypass validation are never spliced into SQL', async () => {
+  await insertLabel('a', []);
+
+  // Simulate a caller writing the internal field directly, skipping limit().
+  const builder = Labels.filterWhere({});
+  const qb = (builder as unknown as BuilderInternals)._builder;
+  qb._limit = '1; DROP TABLE labels';
+
+  const { sql } = qb._buildSelectQuery();
+  assert.ok(!sql.includes('DROP TABLE'), 'raw value must not appear in the SQL text');
+  await assert.rejects(() => builder.run());
+  assert.strictEqual(await countRows('labels'), 1);
 });
 
 test('sample rejects an invalid count', async () => {
