@@ -106,6 +106,31 @@ export class ConstraintError extends DALError {
   }
 }
 
+/**
+ * Revision deleted error
+ *
+ * Thrown when a requested document has been deleted (see `deleteAllRevisions`).
+ */
+export class RevisionDeletedError extends DALError {
+  constructor(message = 'Revision has been deleted.') {
+    super(message, 'REVISION_DELETED');
+    this.name = 'RevisionDeletedError';
+  }
+}
+
+/**
+ * Revision stale error
+ *
+ * Thrown when a requested ID refers to an archived (outdated) revision rather
+ * than the current one.
+ */
+export class RevisionStaleError extends DALError {
+  constructor(message = 'Outdated revision.') {
+    super(message, 'REVISION_STALE');
+    this.name = 'RevisionStaleError';
+  }
+}
+
 export interface RevisionConflictDetails {
   documentId: string | null;
   expectedRevId: string | null;
@@ -232,6 +257,8 @@ const errors = {
   TransactionError,
   QueryError,
   ConstraintError,
+  RevisionDeletedError,
+  RevisionStaleError,
   RevisionConflictError,
   DuplicateSlugNameError,
   convertPostgreSQLError,
