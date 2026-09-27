@@ -58,6 +58,7 @@ class DataAccessLayer implements DataAccessLayerContract {
   modelRegistry: ModelRegistry;
   schemaNamespace?: string;
   private _connected: boolean;
+  private _connecting: Promise<void> | null = null;
 
   // Helper namespaces exposed for model manifests
   mlString = mlString;
@@ -95,7 +96,39 @@ class DataAccessLayer implements DataAccessLayerContract {
       return this;
     }
 
+    // Concurrent callers share one connection attempt (and one pool)
+    if (!this._connecting) {
+      this._connecting = this._openPool().finally(() => {
+        this._connecting = null;
+      });
+    }
+    await this._connecting;
+    return this;
+  }
+
+  /**
+   * Create the pool, expose it on `this.pool` right away, and verify it.
+   * @private
+   */
+  private async _openPool(): Promise<void> {
+    // Expose the pool before the first await: callers may read `pool` while
+    // connect() is still in flight (pg pools connect lazily), as they could
+    // before the connection test was added. `isConnected()` only turns true
+    // once the test succeeds.
     const pool = new Pool(this.config as PoolConfig);
+    this.pool = pool;
+
+    // Attach handlers before any client exists: an 'error' event without a
+    // listener would crash the process.
+    pool.on('connect', () => {
+      debug.db('New PostgreSQL client connected');
+    });
+    pool.on('error', (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      debug.error(`PostgreSQL pool error: ${message}`);
+      debug.error({ error: err instanceof Error ? err : new Error(message) });
+    });
+
     try {
       // Test the connection; always hand the client back, discarding it on error
       const client = await pool.connect();
@@ -107,24 +140,13 @@ class DataAccessLayer implements DataAccessLayerContract {
       }
       client.release();
 
-      this.pool = pool;
       this._connected = true;
       debug.db('PostgreSQL connection pool established');
-
-      // Set up pool event handlers
-      this.pool.on('connect', () => {
-        debug.db('New PostgreSQL client connected');
-      });
-
-      this.pool.on('error', (err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        debug.error(`PostgreSQL pool error: ${message}`);
-        debug.error({ error: err instanceof Error ? err : new Error(message) });
-      });
-
-      return this;
     } catch (error) {
       // Don't leave a half-initialized pool behind
+      if (this.pool === pool) {
+        this.pool = null;
+      }
       await pool.end().catch(() => undefined);
       const message = error instanceof Error ? error.message : String(error);
       debug.error(`Failed to connect to PostgreSQL: ${message}`);
