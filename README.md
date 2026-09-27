@@ -89,6 +89,14 @@ If your test user cannot create extensions, run this once as a superuser:
 psql -d rev_dal_test -c 'CREATE EXTENSION IF NOT EXISTS "pgcrypto";'
 ```
 
+### Revision Tests
+
+The shared `revisions` fixture in `test/helpers/revision-helpers.ts` includes JSONB,
+array and timestamp columns, and `createTestDocumentWithRevisions()` edits them in
+place the way applications do. When changing how rows are read, written or copied,
+check history with `assertArchivedRevisionMatches()`, which compares an archived
+revision with the stored row from before the edit.
+
 ### Type Tests
 
 Type-level checks live under `test/types/` and are compiled with a dedicated config:
@@ -699,8 +707,10 @@ schema and call `setRevisionSummaryEnabled(true)` at bootstrap.
 updates the current row and archives the previous revision in one transaction, so
 a failure leaves no partial history. The archived copy is a deep snapshot taken
 when `newRevision()` runs, so editing nested values in place afterwards
-(`rev.title[lang] = …`, `rev.tags.push(…)`) only changes the new revision. `deleteAllRevisions()` and `saveAll()` are
-likewise all-or-nothing.
+(`rev.title[lang] = …`, `rev.tags.push(…)`) only changes the new revision. Make
+edits after calling `newRevision()`: changes made to the instance before it are
+archived as part of the previous revision. `deleteAllRevisions()` and `saveAll()`
+are likewise all-or-nothing.
 
 Saves use optimistic concurrency: the update only applies if the stored revision
 is still the one this copy was loaded from. If someone else saved a revision in
