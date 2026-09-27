@@ -20,6 +20,27 @@ type PoolLike = Pool | PoolClient;
 
 type DataAccessLayerConfig = (PoolConfig & JsonObject) & Partial<PostgresConfig>;
 
+/**
+ * Summarize query parameters for logs without revealing their values, which
+ * can include password hashes, tokens and personal data.
+ *
+ * @param params Query parameters
+ * @returns e.g. `3 (string, number, null)`
+ */
+function describeQueryParams(params: unknown[]): string {
+  if (params.length === 0) {
+    return '0';
+  }
+
+  const kinds = params.map(param => {
+    if (param === null) return 'null';
+    if (Array.isArray(param)) return 'array';
+    if (param instanceof Date) return 'date';
+    return typeof param;
+  });
+  return `${params.length} (${kinds.join(', ')})`;
+}
+
 interface MigrationRow extends JsonObject {
   filename: string;
 }
@@ -161,13 +182,14 @@ class DataAccessLayer implements DataAccessLayerContract {
       debug.db(`Query executed in ${duration}ms: ${text.substring(0, 100)}...`);
       return result;
     } catch (error) {
+      // Attach the SQL text (values are bound separately) but never the
+      // parameter values, since errors are often logged or reported upstream
       if (typeof error === 'object' && error) {
         (error as JsonObject).query = text;
-        (error as JsonObject).parameters = params;
       }
       debug.error(`Query error: ${(error as Error).message}`);
       debug.error(`Query text: ${text}`);
-      debug.error(`Query params: ${JSON.stringify(params)}`);
+      debug.error(`Query params: ${describeQueryParams(params)}`);
       throw error;
     }
   }

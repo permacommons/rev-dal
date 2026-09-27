@@ -1,6 +1,12 @@
 import { randomUUID } from 'crypto';
 import isUUID from 'is-uuid';
-import { DocumentNotFound, InvalidUUIDError, ValidationError } from './errors.js';
+import {
+  DocumentNotFound,
+  InvalidUUIDError,
+  RevisionDeletedError,
+  RevisionStaleError,
+  ValidationError,
+} from './errors.js';
 import mlString from './ml-string.js';
 import type {
   FilterWhereQueryBuilder,
@@ -104,8 +110,10 @@ export interface RevisionHelpers {
   >(ModelClass: ModelConstructorLike<TData, TVirtual, TInstance>): (idArray: string[]) => unknown;
   getSchema(): Record<string, unknown>;
   registerFieldMappings(ModelClass: ModelConstructorLike): void;
-  deletedError: Error;
-  staleError: Error;
+  /** @deprecated Throw `new RevisionDeletedError()` from 'rev-dal/lib/errors' instead. */
+  readonly deletedError: RevisionDeletedError;
+  /** @deprecated Throw `new RevisionStaleError()` from 'rev-dal/lib/errors' instead. */
+  readonly staleError: RevisionStaleError;
 }
 
 const BASE_REVISION_FIELD_MAPPINGS = Object.freeze({
@@ -129,11 +137,6 @@ const getRevisionFieldMappings = (): Record<string, string> => {
     _revSummary: '_rev_summary',
   };
 };
-
-const deletedError = new Error('Revision has been deleted.');
-deletedError.name = 'RevisionDeletedError';
-const staleError = new Error('Outdated revision.');
-staleError.name = 'RevisionStaleError';
 
 type RevisionUserInput = RevisionActor | null | undefined;
 
@@ -386,11 +389,11 @@ const revision: RevisionHelpers = {
       }
 
       if (data._data._rev_deleted) {
-        throw deletedError;
+        throw new RevisionDeletedError();
       }
 
       if (data._data._old_rev_of) {
-        throw staleError;
+        throw new RevisionStaleError();
       }
 
       return data;
@@ -515,8 +518,14 @@ const revision: RevisionHelpers = {
     }
   },
 
-  deletedError,
-  staleError,
+  // Kept for backward compatibility; each access returns a fresh error so its
+  // stack trace points at the caller rather than at module load.
+  get deletedError() {
+    return new RevisionDeletedError();
+  },
+  get staleError() {
+    return new RevisionStaleError();
+  },
 };
 
 export default revision;
