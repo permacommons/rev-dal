@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import isUUID from 'is-uuid';
+import { cloneRowValue } from './clone.js';
 import {
   DocumentNotFound,
   InvalidUUIDError,
@@ -252,7 +253,9 @@ const revision: RevisionHelpers = {
       // An unsaved document has nothing to archive. If a revision is already
       // pending, keep its snapshot: it still reflects the stored row.
       if (!state._isNew && !state._pendingRevision) {
-        const archive = { ...currentRev._data } as Record<string, unknown>;
+        // Deep copy: callers often edit the new revision in place
+        // (rev.title[lang] = …), which must not reach the archived row.
+        const archive = cloneRowValue(currentRev._data) as Record<string, unknown>;
         archive._old_rev_of = currentRev.id;
         delete archive.id;
 

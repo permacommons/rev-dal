@@ -1,5 +1,6 @@
 import isUUID from 'is-uuid';
 
+import { cloneRowValue } from './clone.js';
 import { convertPostgreSQLError, DocumentNotFound, RevisionConflictError } from './errors.js';
 import type {
   DataAccessLayer,
@@ -136,28 +137,6 @@ function deepEqual(a: unknown, b: unknown): boolean {
 
   // Other types (functions, symbols, etc.) - use strict equality
   return false;
-}
-
-/**
- * Deep clone for tracking original values of JSONB fields
- * @param value - Value to clone
- * @returns Cloned value
- * @private
- */
-function deepClone<T>(value: T): T {
-  if (value === null || value === undefined) return value;
-  if (value instanceof Date) return new Date(value.getTime()) as unknown as T;
-  if (Array.isArray(value)) return value.map(item => deepClone(item)) as unknown as T;
-  if (typeof value === 'object') {
-    const cloned: Record<string, unknown> = {};
-    for (const key in value as Record<string, unknown>) {
-      if (Object.prototype.hasOwnProperty.call(value, key)) {
-        cloned[key] = deepClone((value as Record<string, unknown>)[key]);
-      }
-    }
-    return cloned as unknown as T;
-  }
-  return value;
 }
 
 /** Column names that are safe to interpolate into SQL. */
@@ -1242,6 +1221,9 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
    */
   _snapshotSaveState(): SaveStateSnapshot {
     return {
+      // Shallow is enough: saving only replaces top-level values (validation,
+      // RETURNING), never mutates nested ones. Keeping the caller's nested
+      // objects also means references they hold stay attached to the instance.
       data: { ...this._data },
       changed: new Set(this._changed),
       isNew: this._isNew,
@@ -1527,7 +1509,7 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
 
         // Deep clone objects and arrays to track original state
         if (value !== null && value !== undefined && typeof value === 'object') {
-          this._originalData[dbFieldName] = deepClone(value);
+          this._originalData[dbFieldName] = cloneRowValue(value);
         } else {
           // Clear tracking for non-object values (primitives don't need tracking)
           delete this._originalData[dbFieldName];

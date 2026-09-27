@@ -697,7 +697,9 @@ schema and call `setRevisionSummaryEnabled(true)` at bootstrap.
 
 `newRevision()` only prepares the new revision in memory. The following `save()`
 updates the current row and archives the previous revision in one transaction, so
-a failure leaves no partial history. `deleteAllRevisions()` and `saveAll()` are
+a failure leaves no partial history. The archived copy is a deep snapshot taken
+when `newRevision()` runs, so editing nested values in place afterwards
+(`rev.title[lang] = …`, `rev.tags.push(…)`) only changes the new revision. `deleteAllRevisions()` and `saveAll()` are
 likewise all-or-nothing.
 
 Saves use optimistic concurrency: the update only applies if the stored revision
