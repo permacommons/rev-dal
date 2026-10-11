@@ -139,32 +139,100 @@ interface ComplexJoinSpec extends JsonObject {
   [key: string]: unknown;
 }
 
-interface JoinApplyFilter extends JsonObject {
-  field: string;
-  value?: unknown;
-  operator?: string;
+/**
+ * What an `_apply` callback asked for, recorded by running it against
+ * {@link recordJoinApply}'s builder.
+ */
+interface JoinApplySpec {
+  filters: Array<{ field: string; value: unknown }>;
+  without: string[];
+  order: Array<{ field: string; direction: SortDirection }>;
+  limit: number | null;
 }
 
-interface JoinApplyOrder extends JsonObject {
-  field: string;
-  direction: 'ASC' | 'DESC';
+/** Column names that are safe to interpolate into SQL. */
+const SAFE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Column added to batch-join rows to rank them per parent for `limit()`. */
+const JOIN_RANK_ALIAS = '_join_rank';
+
+/**
+ * Whether a value can be compared with `=` (or `= ANY` for arrays) in a
+ * batch-join filter.
+ */
+function isJoinFilterValue(value: unknown): boolean {
+  if (value === null || value instanceof Date) return true;
+  if (Array.isArray(value)) return value.every(item => item === null || isJoinFilterValue(item));
+  return ['string', 'number', 'boolean', 'bigint'].includes(typeof value);
 }
 
-interface JoinApplyAnalysis extends JsonObject {
-  removeFields: string[];
-  filters: JoinApplyFilter[];
-  order?: JoinApplyOrder;
-  limit?: number;
+/**
+ * Run an `_apply` callback against a builder that records each call, so the
+ * batch query can be built from the actual arguments (including variables
+ * the callback closes over).
+ *
+ * @param applyFn The `_apply` callback from a join specification
+ * @returns The recorded specification, or null when there is no callback
+ */
+function recordJoinApply(applyFn: unknown): JoinApplySpec | null {
+  if (typeof applyFn !== 'function') {
+    return null;
+  }
+
+  const spec: JoinApplySpec = { filters: [], without: [], order: [], limit: null };
+
+  const addFilter = (literal: Record<string, unknown>): JoinApplyBuilder => {
+    if (!literal || typeof literal !== 'object' || Array.isArray(literal)) {
+      throw new TypeError('_apply filterWhere() expects an object of field values.');
+    }
+    for (const [field, value] of Object.entries(literal)) {
+      if (value === undefined) continue;
+      if (!isJoinFilterValue(value)) {
+        throw new TypeError(
+          `_apply filterWhere() supports plain values, null and arrays; '${field}' has an ` +
+            'unsupported value (operator helpers are not supported in joins).'
+        );
+      }
+      spec.filters.push({ field, value });
+    }
+    return builder;
+  };
+
+  const builder: JoinApplyBuilder = {
+    filterWhere: addFilter,
+    filter: addFilter,
+    without(fields) {
+      spec.without.push(...(Array.isArray(fields) ? fields : [fields]));
+      return builder;
+    },
+    limit(count) {
+      spec.limit = assertRowCount(count, 'LIMIT');
+      return builder;
+    },
+    orderBy(field, direction = 'ASC') {
+      spec.order.push({ field, direction: normalizeSortDirection(direction) });
+      return builder;
+    },
+    asc(field) {
+      return builder.orderBy(field, 'ASC');
+    },
+    desc(field) {
+      return builder.orderBy(field, 'DESC');
+    },
+  };
+
+  (applyFn as (qb: JoinApplyBuilder) => unknown)(builder);
+  return spec;
 }
 
 /**
  * Builder interface passed to `_apply` callbacks in join options.
  *
- * Supports a subset of query operations that can be analyzed and applied
- * to related record queries:
- * - `filterWhere` / `filter` - add WHERE conditions
+ * The callback is run once against a builder that records these calls; the
+ * recorded arguments then shape the batch query for the related records:
+ * - `filterWhere` / `filter` - equality filters (null → IS NULL, array → any of)
  * - `without` - exclude fields from results
- * - `limit` - cap number of related records
+ * - `limit` - cap the number of related records per parent row
  * - `orderBy` / `asc` / `desc` - sort related records
  */
 export interface JoinApplyBuilder {
@@ -956,19 +1024,19 @@ class QueryBuilder<
       return;
     }
 
-    const analysis = this._analyzeJoinApply(joinSpec._apply);
-    const { query, params, joinSourceAlias } = this._buildComplexJoinQuery(
+    const spec = recordJoinApply(joinSpec._apply);
+    const { query, params, joinSourceAlias, omitAfterQuery } = this._buildComplexJoinQuery(
       relationName,
       joinInfo,
       sourceValues,
-      analysis
+      spec
     );
 
     const relatedResult = await this.dal.query(query, params);
     let relatedRows = (relatedResult.rows || []) as Array<Record<string, unknown>>;
 
-    if (analysis?.removeFields?.length) {
-      relatedRows = this._applyJoinFieldOmissions(relatedRows, analysis.removeFields);
+    if (omitAfterQuery.length) {
+      relatedRows = this._applyJoinFieldOmissions(relatedRows, omitAfterQuery);
     }
 
     const groupedRows = this._groupRelatedRows(relatedRows, joinSourceAlias);
@@ -1002,35 +1070,85 @@ class QueryBuilder<
     return values;
   }
 
-  _buildComplexJoinQuery(relationName, joinInfo, sourceValues, analysis = null) {
+  /**
+   * Resolve a field named in an `_apply` callback to a column of the related
+   * table, using the related model's field mappings when available.
+   * @private
+   */
+  _resolveJoinColumn(
+    relatedModel: { _getDbFieldName?: (field: string) => string } | null,
+    relationName: string,
+    field: string
+  ): string {
+    const mapped =
+      relatedModel && typeof relatedModel._getDbFieldName === 'function'
+        ? relatedModel._getDbFieldName(field)
+        : field;
+    const column = mapped !== field ? mapped : this._normalizeColumnName(field);
+    if (typeof column !== 'string' || !SAFE_IDENTIFIER.test(column)) {
+      throw new Error(`Invalid field '${String(field)}' in _apply for relation '${relationName}'.`);
+    }
+    return column;
+  }
+
+  /**
+   * Build the batch query that loads a relation for a set of parent rows.
+   *
+   * Selects the related model's safe (non-sensitive) columns, applies the
+   * recorded `_apply` filters/order as parameters, and limits per parent with
+   * a window function.
+   * @private
+   */
+  _buildComplexJoinQuery(
+    relationName: string,
+    joinInfo: RelationJoinInfo,
+    sourceValues: unknown[],
+    spec: JoinApplySpec | null = null
+  ) {
     const params: unknown[] = [sourceValues];
-    let paramIndex = 2;
+    const nextParam = (value: unknown) => {
+      params.push(value);
+      return `$${params.length}`;
+    };
 
     const targetAlias = `${relationName}_target`;
     const throughAlias = `${relationName}_through`;
     const joinSourceAlias = '_join_source_id';
+    const relatedModel = this._getRelatedModel(relationName, joinInfo) as {
+      _getDbFieldName?: (field: string) => string;
+      getSafeColumnNames?: () => string[];
+    } | null;
+    const resolve = (field: string) => this._resolveJoinColumn(relatedModel, relationName, field);
 
-    const whereClauses = [];
-    let orderClause = '';
-    let limitClause = '';
-
-    let query;
-    if (joinInfo.type === 'through') {
-      query = `
-        SELECT ${targetAlias}.*, ${throughAlias}.${joinInfo.joinTableSourceColumn} AS ${joinSourceAlias}
-        FROM ${joinInfo.table} ${targetAlias}
-        JOIN ${joinInfo.joinTable} ${throughAlias}
-          ON ${throughAlias}.${joinInfo.joinTableTargetColumn} = ${targetAlias}.${joinInfo.targetColumn}
-      `;
-      whereClauses.push(`${throughAlias}.${joinInfo.joinTableSourceColumn} = ANY($1)`);
+    // Columns: the related model's safe columns minus `without`; fall back to
+    // all columns (and omit after the query) when no model is registered.
+    const safeColumns =
+      typeof relatedModel?.getSafeColumnNames === 'function'
+        ? relatedModel.getSafeColumnNames()
+        : [];
+    let selectList: string[];
+    let omitAfterQuery: string[] = [];
+    if (safeColumns.length > 0) {
+      const omitted = new Set((spec?.without ?? []).map(resolve));
+      selectList = safeColumns
+        .filter(column => !omitted.has(column))
+        .map(column => `${targetAlias}.${column}`);
     } else {
-      query = `
-        SELECT ${targetAlias}.*, ${targetAlias}.${joinInfo.targetColumn} AS ${joinSourceAlias}
-        FROM ${joinInfo.table} ${targetAlias}
-      `;
-      whereClauses.push(`${targetAlias}.${joinInfo.targetColumn} = ANY($1)`);
+      selectList = [`${targetAlias}.*`];
+      omitAfterQuery = spec?.without ?? [];
     }
 
+    const isThrough = joinInfo.type === 'through';
+    const sourceExpr = isThrough
+      ? `${throughAlias}.${joinInfo.joinTableSourceColumn}`
+      : `${targetAlias}.${joinInfo.targetColumn}`;
+
+    let from = `FROM ${joinInfo.table} ${targetAlias}`;
+    if (isThrough) {
+      from += ` JOIN ${joinInfo.joinTable} ${throughAlias} ON ${throughAlias}.${joinInfo.joinTableTargetColumn} = ${targetAlias}.${joinInfo.targetColumn}`;
+    }
+
+    const whereClauses = [`${sourceExpr} = ANY($1)`];
     if (joinInfo.hasRevisions) {
       whereClauses.push(`${targetAlias}._old_rev_of IS NULL`);
       whereClauses.push(
@@ -1038,48 +1156,38 @@ class QueryBuilder<
       );
     }
 
-    if (analysis?.filters?.length) {
-      for (const filter of analysis.filters) {
-        const column = this._normalizeColumnName(filter.field);
-        if (column === '_rev_deleted' && filter.value === false) {
-          whereClauses.push(
-            `(${targetAlias}._rev_deleted IS NULL OR ${targetAlias}._rev_deleted = false)`
-          );
-          continue;
-        }
-
-        if (filter.operator === 'IS NULL' || filter.value === null) {
-          whereClauses.push(`${targetAlias}.${column} IS NULL`);
-          continue;
-        }
-
-        if (filter.operator === 'IS NOT NULL') {
-          whereClauses.push(`${targetAlias}.${column} IS NOT NULL`);
-          continue;
-        }
-
-        const operator = filter.operator || '=';
-        whereClauses.push(`${targetAlias}.${column} ${operator} $${paramIndex}`);
-        params.push(filter.value);
-        paramIndex++;
+    for (const { field, value } of spec?.filters ?? []) {
+      const column = `${targetAlias}.${resolve(field)}`;
+      if (resolve(field) === '_rev_deleted' && value === false) {
+        whereClauses.push(`(${column} IS NULL OR ${column} = false)`);
+      } else if (value === null) {
+        whereClauses.push(`${column} IS NULL`);
+      } else if (Array.isArray(value)) {
+        whereClauses.push(`${column} = ANY(${nextParam(value)})`);
+      } else {
+        whereClauses.push(`${column} = ${nextParam(value)}`);
       }
     }
 
-    if (analysis?.order) {
-      const column = this._normalizeColumnName(analysis.order.field);
-      orderClause = ` ORDER BY ${targetAlias}.${column} ${analysis.order.direction}`;
+    const orderSql = (spec?.order ?? [])
+      .map(({ field, direction }) => `${targetAlias}.${resolve(field)} ${direction}`)
+      .join(', ');
+
+    const columns = [...selectList, `${sourceExpr} AS ${joinSourceAlias}`];
+    const where = ` WHERE ${whereClauses.join(' AND ')}`;
+    let query: string;
+
+    if (spec?.limit !== null && spec?.limit !== undefined) {
+      // Limit per parent: rank each parent's related rows, keep the first n
+      const rank = `ROW_NUMBER() OVER (PARTITION BY ${sourceExpr}${orderSql ? ` ORDER BY ${orderSql}` : ''}) AS ${JOIN_RANK_ALIAS}`;
+      query =
+        `SELECT * FROM (SELECT ${[...columns, rank].join(', ')} ${from}${where}) AS _join_ranked ` +
+        `WHERE ${JOIN_RANK_ALIAS} <= ${nextParam(spec.limit)} ORDER BY ${JOIN_RANK_ALIAS}`;
+    } else {
+      query = `SELECT ${columns.join(', ')} ${from}${where}${orderSql ? ` ORDER BY ${orderSql}` : ''}`;
     }
 
-    if (typeof analysis?.limit === 'number') {
-      limitClause = ` LIMIT $${paramIndex}`;
-      params.push(assertRowCount(analysis.limit, 'LIMIT'));
-      paramIndex++;
-    }
-
-    const whereClause = whereClauses.length > 0 ? ` WHERE ${whereClauses.join(' AND ')}` : '';
-    const sql = `${query.trim()}${whereClause}${orderClause}${limitClause}`;
-
-    return { query: sql, params, joinSourceAlias };
+    return { query, params, joinSourceAlias, omitAfterQuery };
   }
 
   _groupRelatedRows(rows: Array<Record<string, unknown>>, joinSourceAlias = '_join_source_id') {
@@ -1104,6 +1212,7 @@ class QueryBuilder<
 
       const cloned = { ...row };
       delete cloned[joinSourceAlias];
+      delete cloned[JOIN_RANK_ALIAS];
 
       const existing = grouped.get(key) || [];
       existing.push(cloned);
@@ -1184,86 +1293,6 @@ class QueryBuilder<
       }
       return cloned;
     });
-  }
-
-  _analyzeJoinApply(applyFn: ((qb: unknown) => unknown) | undefined): JoinApplyAnalysis | null {
-    if (typeof applyFn !== 'function') {
-      return null;
-    }
-
-    const source = applyFn.toString();
-    const analysis: JoinApplyAnalysis = {
-      removeFields: [],
-      filters: [],
-    };
-
-    const withoutRegex = /without\(([^)]+)\)/g;
-    let withoutMatch;
-    while ((withoutMatch = withoutRegex.exec(source)) !== null) {
-      const fields = withoutMatch[1]
-        .split(',')
-        .map(entry => entry.replace(/['"\[\]\s]/g, ''))
-        .filter(Boolean);
-      analysis.removeFields.push(...fields);
-    }
-
-    const limitMatch = source.match(/limit\((\d+)\)/);
-    if (limitMatch) {
-      analysis.limit = Number.parseInt(limitMatch[1], 10);
-    }
-
-    const descMatch = source.match(/desc\(['"]([\w]+)['"]\)/);
-    const ascMatch = source.match(/asc\(['"]([\w]+)['"]\)/);
-    const orderByMatch = source.match(/orderBy\(['"]([\w]+)['"]\)/);
-
-    if (descMatch) {
-      analysis.order = { field: descMatch[1], direction: 'DESC' };
-    } else if (ascMatch) {
-      analysis.order = { field: ascMatch[1], direction: 'ASC' };
-    } else if (orderByMatch) {
-      analysis.order = { field: orderByMatch[1], direction: 'ASC' };
-    }
-
-    const filterMatch = source.match(/filter(?:Where)?\(\{([^}]*)\}\)/);
-    if (filterMatch) {
-      const parts = filterMatch[1].split(',');
-      for (const part of parts) {
-        const [rawField, rawValue] = part.split(':');
-        if (!rawField) continue;
-        const field = rawField.trim().replace(/['"]/g, '');
-        if (!field) continue;
-
-        let value = rawValue ? rawValue.trim() : undefined;
-        if (value === undefined || value.length === 0) {
-          analysis.filters.push({ field, operator: 'IS NULL', value: null });
-          continue;
-        }
-
-        value = value.replace(/['"]/g, '');
-        if (value.toLowerCase() === 'true') {
-          analysis.filters.push({ field, value: true });
-        } else if (value.toLowerCase() === 'false') {
-          analysis.filters.push({ field, value: false });
-        } else if (value.toLowerCase() === 'null') {
-          analysis.filters.push({ field, operator: 'IS NULL', value: null });
-        } else if (!Number.isNaN(Number(value))) {
-          analysis.filters.push({ field, value: Number(value) });
-        } else {
-          analysis.filters.push({ field, value });
-        }
-      }
-    }
-
-    if (
-      analysis.removeFields.length === 0 &&
-      analysis.filters.length === 0 &&
-      !analysis.order &&
-      typeof analysis.limit !== 'number'
-    ) {
-      return null;
-    }
-
-    return analysis;
   }
 
   _normalizeColumnName(field) {

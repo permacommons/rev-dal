@@ -531,6 +531,15 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
       ? `${schemaNamespace}${relationConfig.targetTable}`
       : relationConfig.targetTable;
 
+    // Select the target model's safe columns so sensitive fields stay out,
+    // as they do for inline joins
+    const safeColumns =
+      (TargetModel as { getSafeColumnNames?: () => string[] }).getSafeColumnNames?.() ?? [];
+    const targetColumns = (prefix: string) =>
+      safeColumns.length > 0
+        ? safeColumns.map(column => `${prefix}${column}`).join(', ')
+        : `${prefix}*`;
+
     // Build query based on relation type
     let query: string;
     const params: unknown[] = uniqueIds;
@@ -551,7 +560,7 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
       query = `
         SELECT
           j.${junctionSourceColumn} AS __source_id,
-          t.*
+          ${targetColumns('t.')}
         FROM ${targetTableName} t
         JOIN ${junctionTableName} j ON t.${targetColumn} = j.${junctionTargetColumn}
         WHERE j.${junctionSourceColumn} IN (${placeholders})
@@ -573,7 +582,7 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
       query = `
         SELECT
           ${targetColumn} AS __source_id,
-          *
+          ${targetColumns('')}
         FROM ${targetTableName}
         WHERE ${targetColumn} IN (${placeholders})
       `;
@@ -601,10 +610,15 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
       const rowData = { ...row };
       delete (rowData as Record<string, unknown>).__source_id;
 
-      const instance = TargetModel.createFromRow(rowData as JsonObject) as ModelInstance<
-        JsonObject,
-        JsonObject
-      >;
+      // Manifest models provide createFromRow(); fall back to _createInstance()
+      const target = TargetModel as typeof TargetModel & {
+        _createInstance?: (row: JsonObject) => ModelInstance<JsonObject, JsonObject>;
+      };
+      const instance = (
+        typeof target.createFromRow === 'function'
+          ? target.createFromRow(rowData as JsonObject)
+          : target._createInstance?.(rowData as JsonObject)
+      ) as ModelInstance<JsonObject, JsonObject>;
 
       if (!resultMap.has(sourceId)) {
         resultMap.set(sourceId, []);
