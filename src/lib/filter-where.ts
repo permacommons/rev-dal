@@ -153,6 +153,126 @@ function createGroupedPredicate(
   return groupPredicate;
 }
 
+type PredicateOptions = Parameters<QueryBuilder['_createPredicate']>[3];
+
+type RangeBounds = { leftBound: 'open' | 'closed'; rightBound: 'open' | 'closed' };
+
+type RangeValue<T> = { lower: T; upper: T; options: RangeBounds };
+
+/**
+ * Create an operator token: `value` is what the caller passed (normalized),
+ * and `build` turns it into a predicate for the field it ends up attached to.
+ */
+function makeOperator<K extends PropertyKey, TValue>(
+  value: TValue,
+  build: (context: OperatorBuilderContext) => Predicate | null
+): InternalFilterOperator<K, TValue> {
+  return {
+    [FILTER_OPERATOR_TOKEN]: true,
+    __allowedKeys: null as unknown as K,
+    value,
+    build,
+  };
+}
+
+/**
+ * Apply a predicate: `and()` adds it to the builder (mutate), while `or()`
+ * only creates it so it can be grouped.
+ */
+function applyPredicate(
+  { builder, field, mutate }: OperatorBuilderContext,
+  operator: string,
+  value: unknown,
+  options?: PredicateOptions
+): Predicate {
+  return mutate
+    ? builder._addWhereCondition(field, operator, value, options)
+    : builder._createPredicate(field, operator, value, options);
+}
+
+/** Operator comparing the field with one value (`!=`, `<`, `LIKE`, …). */
+function comparison<K extends PropertyKey, TValue>(
+  operator: string,
+  value: TValue,
+  options?: PredicateOptions
+): InternalFilterOperator<K, TValue> {
+  return makeOperator<K, TValue>(value, context =>
+    applyPredicate(context, operator, value, options)
+  );
+}
+
+/**
+ * Operator comparing a text-array column with a list of strings
+ * (`@>` contains all, `&&` overlaps). An empty list matches everything for
+ * `@>` and nothing for `&&`, so `emptyMatches` decides.
+ */
+function arrayComparison<K extends PropertyKey, TValue>(
+  operator: '@>' | '&&',
+  value: string | readonly string[],
+  emptyMatches: 'all' | 'none'
+): InternalFilterOperator<K, TValue> {
+  const normalized = normalizeArrayValue(value);
+  return makeOperator<K, TValue>(normalized as unknown as TValue, context => {
+    if (normalized.length === 0) {
+      if (emptyMatches === 'all') {
+        return null;
+      }
+      // Overlap with an empty set is always false: match no rows rather
+      // than silently dropping the filter.
+      const predicate = context.builder._createMatchNothingPredicate();
+      if (context.mutate) {
+        context.builder._where.push(predicate);
+      }
+      return predicate;
+    }
+    return applyPredicate(context, operator, normalized, { cast: 'text[]' });
+  });
+}
+
+/** Operator testing membership in a non-empty list (`= ANY`, `!= ALL`). */
+function membership<K extends PropertyKey, TValue>(
+  operator: '= ANY' | '!= ALL',
+  values: readonly [TValue, ...TValue[]] | [TValue, ...TValue[]],
+  cast: string | undefined
+): InternalFilterOperator<K, TValue[]> {
+  const normalized = normalizeNonEmptyArrayValue(values);
+  return makeOperator<K, TValue[]>(normalized, context =>
+    applyPredicate(context, operator, normalized, {
+      valueTransform: (placeholder: string) => `(${placeholder}${cast ? `::${cast}` : ''})`,
+    })
+  );
+}
+
+/**
+ * Operator testing whether the field lies within (or outside) a range.
+ * Bounds default to closed; `outside` negates the range.
+ */
+function range<K extends PropertyKey, T>(
+  lower: T,
+  upper: T,
+  options: { leftBound?: 'open' | 'closed'; rightBound?: 'open' | 'closed' },
+  outside: boolean
+): InternalFilterOperator<K, RangeValue<T>> {
+  const bounds = {
+    leftBound: options.leftBound ?? 'closed',
+    rightBound: options.rightBound ?? 'closed',
+  } as const;
+  const leftOpen = bounds.leftBound === 'open';
+  const rightOpen = bounds.rightBound === 'open';
+  return makeOperator<K, RangeValue<T>>(
+    { lower, upper, options: bounds },
+    ({ builder, field, mutate }) =>
+      createGroupedPredicate(
+        builder,
+        field,
+        mutate,
+        { operator: outside ? (leftOpen ? '<=' : '<') : leftOpen ? '>' : '>=', value: lower },
+        { operator: outside ? (rightOpen ? '>=' : '>') : rightOpen ? '<' : '<=', value: upper },
+        outside ? 'OR' : 'AND'
+      )
+  );
+}
+
 /**
  * Generates the operator helper bag exposed via `Model.ops`. The helpers are
  * intentionally minimal for now: `neq` works on any field, `containsAll`
@@ -162,320 +282,78 @@ function createGroupedPredicate(
 function createOperators<TRecord extends JsonObject>(): FilterWhereOperators<TRecord> {
   return {
     neq<K extends keyof TRecord>(value: TRecord[K] | null) {
-      const operator: InternalFilterOperator<K, TRecord[K] | null> = {
-        [FILTER_OPERATOR_TOKEN]: true,
-        __allowedKeys: null as unknown as K,
-        value,
-        build({ builder, field, mutate }) {
-          return mutate
-            ? builder._addWhereCondition(field, '!=', value)
-            : builder._createPredicate(field, '!=', value);
-        },
-      };
-      return operator;
+      return comparison<K, TRecord[K] | null>('!=', value);
     },
     lt<K extends ComparableKeys<TRecord>>(value: NonNullable<TRecord[K]>) {
-      const operator: InternalFilterOperator<K, NonNullable<TRecord[K]>> = {
-        [FILTER_OPERATOR_TOKEN]: true,
-        __allowedKeys: null as unknown as K,
-        value,
-        build({ builder, field, mutate }) {
-          return mutate
-            ? builder._addWhereCondition(field, '<', value)
-            : builder._createPredicate(field, '<', value);
-        },
-      };
-      return operator;
+      return comparison<K, NonNullable<TRecord[K]>>('<', value);
     },
     lte<K extends ComparableKeys<TRecord>>(value: NonNullable<TRecord[K]>) {
-      const operator: InternalFilterOperator<K, NonNullable<TRecord[K]>> = {
-        [FILTER_OPERATOR_TOKEN]: true,
-        __allowedKeys: null as unknown as K,
-        value,
-        build({ builder, field, mutate }) {
-          return mutate
-            ? builder._addWhereCondition(field, '<=', value)
-            : builder._createPredicate(field, '<=', value);
-        },
-      };
-      return operator;
+      return comparison<K, NonNullable<TRecord[K]>>('<=', value);
     },
     gt<K extends ComparableKeys<TRecord>>(value: NonNullable<TRecord[K]>) {
-      const operator: InternalFilterOperator<K, NonNullable<TRecord[K]>> = {
-        [FILTER_OPERATOR_TOKEN]: true,
-        __allowedKeys: null as unknown as K,
-        value,
-        build({ builder, field, mutate }) {
-          return mutate
-            ? builder._addWhereCondition(field, '>', value)
-            : builder._createPredicate(field, '>', value);
-        },
-      };
-      return operator;
+      return comparison<K, NonNullable<TRecord[K]>>('>', value);
     },
     gte<K extends ComparableKeys<TRecord>>(value: NonNullable<TRecord[K]>) {
-      const operator: InternalFilterOperator<K, NonNullable<TRecord[K]>> = {
-        [FILTER_OPERATOR_TOKEN]: true,
-        __allowedKeys: null as unknown as K,
-        value,
-        build({ builder, field, mutate }) {
-          return mutate
-            ? builder._addWhereCondition(field, '>=', value)
-            : builder._createPredicate(field, '>=', value);
-        },
-      };
-      return operator;
+      return comparison<K, NonNullable<TRecord[K]>>('>=', value);
     },
     containsAll<K extends StringArrayKeys<TRecord>>(
       value: string | readonly string[] | string[]
     ): InternalFilterOperator<K, TRecord[K]> {
-      const normalized = normalizeArrayValue(value);
-      const operator: InternalFilterOperator<K, TRecord[K]> = {
-        [FILTER_OPERATOR_TOKEN]: true,
-        __allowedKeys: null as unknown as K,
-        value: normalized as unknown as TRecord[K],
-        build({ builder, field, mutate }) {
-          if (normalized.length === 0) {
-            return null;
-          }
-          return mutate
-            ? builder._addWhereCondition(field, '@>', normalized, { cast: 'text[]' })
-            : builder._createPredicate(field, '@>', normalized, { cast: 'text[]' });
-        },
-      };
-      return operator;
+      return arrayComparison<K, TRecord[K]>('@>', value, 'all');
     },
     containsAny<K extends StringArrayKeys<TRecord>>(
       value: string | readonly string[] | string[]
     ): InternalFilterOperator<K, TRecord[K]> {
-      const normalized = normalizeArrayValue(value);
-      const operator: InternalFilterOperator<K, TRecord[K]> = {
-        [FILTER_OPERATOR_TOKEN]: true,
-        __allowedKeys: null as unknown as K,
-        value: normalized as unknown as TRecord[K],
-        build({ builder, field, mutate }) {
-          if (normalized.length === 0) {
-            // Overlap with an empty set is always false: match no rows rather
-            // than silently dropping the filter.
-            const predicate = builder._createMatchNothingPredicate();
-            if (mutate) {
-              builder._where.push(predicate);
-            }
-            return predicate;
-          }
-          return mutate
-            ? builder._addWhereCondition(field, '&&', normalized, { cast: 'text[]' })
-            : builder._createPredicate(field, '&&', normalized, { cast: 'text[]' });
-        },
-      };
-      return operator;
+      return arrayComparison<K, TRecord[K]>('&&', value, 'none');
     },
     in<K extends EqualityComparableKeys<TRecord>, TValue extends TRecord[K]>(
       values: readonly [TValue, ...TValue[]] | [TValue, ...TValue[]],
       options: { cast?: string } = {}
     ): InternalFilterOperator<K, TValue[]> {
-      const normalized = normalizeNonEmptyArrayValue(values);
-      const operator: InternalFilterOperator<K, TValue[]> = {
-        [FILTER_OPERATOR_TOKEN]: true,
-        __allowedKeys: null as unknown as K,
-        value: normalized,
-        build({ builder, field, mutate }) {
-          const predicateOptions = {
-            valueTransform: (placeholder: string) =>
-              `(${placeholder}${options.cast ? `::${options.cast}` : ''})`,
-          };
-          return mutate
-            ? builder._addWhereCondition(field, '= ANY', normalized, predicateOptions)
-            : builder._createPredicate(field, '= ANY', normalized, predicateOptions);
-        },
-      };
-      return operator;
+      return membership<K, TValue>('= ANY', values, options.cast);
     },
     notIn<K extends EqualityComparableKeys<TRecord>, TValue extends TRecord[K]>(
       values: readonly [TValue, ...TValue[]] | [TValue, ...TValue[]],
       options: { cast?: string } = {}
     ): InternalFilterOperator<K, TValue[]> {
-      const normalized = normalizeNonEmptyArrayValue(values);
-      const operator: InternalFilterOperator<K, TValue[]> = {
-        [FILTER_OPERATOR_TOKEN]: true,
-        __allowedKeys: null as unknown as K,
-        value: normalized,
-        build({ builder, field, mutate }) {
-          const predicateOptions = {
-            valueTransform: (placeholder: string) =>
-              `(${placeholder}${options.cast ? `::${options.cast}` : ''})`,
-          };
-          return mutate
-            ? builder._addWhereCondition(field, '!= ALL', normalized, predicateOptions)
-            : builder._createPredicate(field, '!= ALL', normalized, predicateOptions);
-        },
-      };
-      return operator;
+      return membership<K, TValue>('!= ALL', values, options.cast);
     },
     not<K extends BooleanKeys<TRecord>>(): InternalFilterOperator<K, true> {
-      const operator: InternalFilterOperator<K, true> = {
-        [FILTER_OPERATOR_TOKEN]: true,
-        __allowedKeys: null as unknown as K,
-        value: true,
-        build({ builder, field, mutate }) {
-          return mutate
-            ? builder._addWhereCondition(field, 'IS NOT', true)
-            : builder._createPredicate(field, 'IS NOT', true);
-        },
-      };
-      return operator;
+      return comparison<K, true>('IS NOT', true);
     },
     between<K extends ComparableKeys<TRecord>>(
       lower: NonNullable<TRecord[K]>,
       upper: NonNullable<TRecord[K]>,
       options: { leftBound?: 'open' | 'closed'; rightBound?: 'open' | 'closed' } = {}
-    ): InternalFilterOperator<
-      K,
-      {
-        lower: NonNullable<TRecord[K]>;
-        upper: NonNullable<TRecord[K]>;
-        options: { leftBound: 'open' | 'closed'; rightBound: 'open' | 'closed' };
-      }
-    > {
-      const bounds = {
-        leftBound: options.leftBound ?? 'closed',
-        rightBound: options.rightBound ?? 'closed',
-      } as const;
-      const operator: InternalFilterOperator<
-        K,
-        {
-          lower: NonNullable<TRecord[K]>;
-          upper: NonNullable<TRecord[K]>;
-          options: typeof bounds;
-        }
-      > = {
-        [FILTER_OPERATOR_TOKEN]: true,
-        __allowedKeys: null as unknown as K,
-        value: { lower, upper, options: bounds },
-        build({ builder, field, mutate }) {
-          const leftOp = bounds.leftBound === 'open' ? '>' : '>=';
-          const rightOp = bounds.rightBound === 'open' ? '<' : '<=';
-          return createGroupedPredicate(
-            builder,
-            field,
-            mutate,
-            { operator: leftOp, value: lower },
-            { operator: rightOp, value: upper },
-            'AND'
-          );
-        },
-      };
-      return operator;
+    ): InternalFilterOperator<K, RangeValue<NonNullable<TRecord[K]>>> {
+      return range<K, NonNullable<TRecord[K]>>(lower, upper, options, false);
     },
     notBetween<K extends ComparableKeys<TRecord>>(
       lower: NonNullable<TRecord[K]>,
       upper: NonNullable<TRecord[K]>,
       options: { leftBound?: 'open' | 'closed'; rightBound?: 'open' | 'closed' } = {}
-    ): InternalFilterOperator<
-      K,
-      {
-        lower: NonNullable<TRecord[K]>;
-        upper: NonNullable<TRecord[K]>;
-        options: { leftBound: 'open' | 'closed'; rightBound: 'open' | 'closed' };
-      }
-    > {
-      const bounds = {
-        leftBound: options.leftBound ?? 'closed',
-        rightBound: options.rightBound ?? 'closed',
-      } as const;
-      const operator: InternalFilterOperator<
-        K,
-        {
-          lower: NonNullable<TRecord[K]>;
-          upper: NonNullable<TRecord[K]>;
-          options: typeof bounds;
-        }
-      > = {
-        [FILTER_OPERATOR_TOKEN]: true,
-        __allowedKeys: null as unknown as K,
-        value: { lower, upper, options: bounds },
-        build({ builder, field, mutate }) {
-          const leftOp = bounds.leftBound === 'open' ? '<=' : '<';
-          const rightOp = bounds.rightBound === 'open' ? '>=' : '>';
-          return createGroupedPredicate(
-            builder,
-            field,
-            mutate,
-            { operator: leftOp, value: lower },
-            { operator: rightOp, value: upper },
-            'OR'
-          );
-        },
-      };
-      return operator;
+    ): InternalFilterOperator<K, RangeValue<NonNullable<TRecord[K]>>> {
+      return range<K, NonNullable<TRecord[K]>>(lower, upper, options, true);
     },
     jsonContains<K extends JsonObjectKeys<TRecord>>(
       value: JsonObject
     ): InternalFilterOperator<K, JsonObject> {
-      const operator: InternalFilterOperator<K, JsonObject> = {
-        [FILTER_OPERATOR_TOKEN]: true,
-        __allowedKeys: null as unknown as K,
-        value,
-        build({ builder, field, mutate }) {
-          const options = { cast: 'jsonb', serializeValue: JSON.stringify };
-          return mutate
-            ? builder._addWhereCondition(field, '@>', value, options)
-            : builder._createPredicate(field, '@>', value, options);
-        },
-      };
-      return operator;
+      return comparison<K, JsonObject>('@>', value, {
+        cast: 'jsonb',
+        serializeValue: JSON.stringify,
+      });
     },
     ilike<K extends StringKeys<TRecord>>(pattern: string): InternalFilterOperator<K, string> {
-      const operator: InternalFilterOperator<K, string> = {
-        [FILTER_OPERATOR_TOKEN]: true,
-        __allowedKeys: null as unknown as K,
-        value: pattern,
-        build({ builder, field, mutate }) {
-          return mutate
-            ? builder._addWhereCondition(field, 'ILIKE', pattern)
-            : builder._createPredicate(field, 'ILIKE', pattern);
-        },
-      };
-      return operator;
+      return comparison<K, string>('ILIKE', pattern);
     },
     like<K extends StringKeys<TRecord>>(pattern: string): InternalFilterOperator<K, string> {
-      const operator: InternalFilterOperator<K, string> = {
-        [FILTER_OPERATOR_TOKEN]: true,
-        __allowedKeys: null as unknown as K,
-        value: pattern,
-        build({ builder, field, mutate }) {
-          return mutate
-            ? builder._addWhereCondition(field, 'LIKE', pattern)
-            : builder._createPredicate(field, 'LIKE', pattern);
-        },
-      };
-      return operator;
+      return comparison<K, string>('LIKE', pattern);
     },
     notLike<K extends StringKeys<TRecord>>(pattern: string): InternalFilterOperator<K, string> {
-      const operator: InternalFilterOperator<K, string> = {
-        [FILTER_OPERATOR_TOKEN]: true,
-        __allowedKeys: null as unknown as K,
-        value: pattern,
-        build({ builder, field, mutate }) {
-          return mutate
-            ? builder._addWhereCondition(field, 'NOT LIKE', pattern)
-            : builder._createPredicate(field, 'NOT LIKE', pattern);
-        },
-      };
-      return operator;
+      return comparison<K, string>('NOT LIKE', pattern);
     },
     notIlike<K extends StringKeys<TRecord>>(pattern: string): InternalFilterOperator<K, string> {
-      const operator: InternalFilterOperator<K, string> = {
-        [FILTER_OPERATOR_TOKEN]: true,
-        __allowedKeys: null as unknown as K,
-        value: pattern,
-        build({ builder, field, mutate }) {
-          return mutate
-            ? builder._addWhereCondition(field, 'NOT ILIKE', pattern)
-            : builder._createPredicate(field, 'NOT ILIKE', pattern);
-        },
-      };
-      return operator;
+      return comparison<K, string>('NOT ILIKE', pattern);
     },
   } satisfies FilterWhereOperators<TRecord>;
 }
