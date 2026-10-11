@@ -21,6 +21,13 @@ type IncrementResult<TRow extends JsonObject> = {
 type SortDirection = 'ASC' | 'DESC';
 
 /**
+ * Separates relation and column in the aliases of inline-joined columns
+ * (`"thing.id"`). Column and relation names are plain identifiers, which can't
+ * contain it, so a joined column can never be mistaken for a main-table column.
+ */
+const JOIN_ALIAS_SEPARATOR = '.';
+
+/**
  * Validate a LIMIT/OFFSET value. Anything other than a non-negative safe
  * integer is rejected rather than coerced; callers should parse and clamp
  * untrusted input (e.g. query strings) before passing it in.
@@ -605,8 +612,9 @@ class QueryBuilder<
       // - 'one' → inline join (single query)
       // - 'many' → batch loader (follow-up query, avoids row multiplication)
       const joinInfo = this._getJoinInfo(relationName);
-      if (joinInfo && joinInfo.cardinality === 'many') {
-        // Use batch loader for many relations even when true is passed
+      if (joinInfo && (joinInfo.cardinality === 'many' || this._inlineJoinConflict(joinInfo))) {
+        // Use the batch loader for many relations, and for relations whose
+        // table can't be joined inline again (joined tables aren't aliased)
         this._addComplexJoin(relationName, {});
       } else {
         this._addSimpleJoin(relationName);
@@ -627,10 +635,22 @@ class QueryBuilder<
    * @private
    */
   _addSimpleJoin(relationName) {
+    if (this._simpleJoins?.[relationName]) {
+      return; // Already joined (e.g. by whereRelated)
+    }
+
     const joinInfo = this._getJoinInfo(relationName);
     if (!joinInfo) {
       debug.db(`Warning: Unknown relation '${relationName}' for table '${this.tableName}'`);
       return;
+    }
+
+    const conflict = this._inlineJoinConflict(joinInfo);
+    if (conflict) {
+      throw new Error(
+        `Cannot join relation '${relationName}' inline: ${conflict}. ` +
+          'Load it with getJoin() instead, which falls back to a separate query.'
+      );
     }
 
     if (joinInfo.joinTable && joinInfo.joinTableOn) {
@@ -659,6 +679,28 @@ class QueryBuilder<
       this._simpleJoins = {};
     }
     this._simpleJoins[relationName] = joinInfo;
+  }
+
+  /**
+   * Explain why a relation's tables can't be joined inline into this query,
+   * or return null if they can. Joined tables are referenced by name rather
+   * than by alias, so each table may appear only once.
+   * @private
+   */
+  _inlineJoinConflict(joinInfo: RelationJoinInfo): string | null {
+    const joined = new Set<string>([this.tableName]);
+    for (const info of Object.values(this._simpleJoins ?? {})) {
+      joined.add(info.table);
+      if (info.joinTable) joined.add(info.joinTable);
+    }
+
+    for (const table of [joinInfo.table, joinInfo.joinTable]) {
+      if (!table || !joined.has(table)) continue;
+      return table === this.tableName
+        ? `it refers back to '${table}', the table being queried`
+        : `'${table}' is already joined by another relation`;
+    }
+    return null;
   }
 
   /**
@@ -1315,22 +1357,17 @@ class QueryBuilder<
       const mainData: Record<string, unknown> = {};
       const joinedData: Record<string, Record<string, unknown>> = {};
 
-      // Separate main data from joined data
+      // Separate main data from joined data: only joined columns carry the
+      // separator in their alias ("relation.column")
       for (const [key, value] of Object.entries(row)) {
-        let isJoinedField = false;
-        for (const relationName of Object.keys(this._simpleJoins)) {
-          if (key.startsWith(`${relationName}_`)) {
-            if (!joinedData[relationName]) {
-              joinedData[relationName] = {};
-            }
-            const fieldName = key.substring(relationName.length + 1);
-            joinedData[relationName][fieldName] = value;
-            isJoinedField = true;
-            break;
+        const separatorIndex = key.indexOf(JOIN_ALIAS_SEPARATOR);
+        const relationName = separatorIndex > 0 ? key.slice(0, separatorIndex) : null;
+        if (relationName && Object.hasOwn(this._simpleJoins, relationName)) {
+          if (!joinedData[relationName]) {
+            joinedData[relationName] = {};
           }
-        }
-
-        if (!isJoinedField) {
+          joinedData[relationName][key.slice(separatorIndex + 1)] = value;
+        } else {
           mainData[key] = value;
         }
       }
@@ -1873,7 +1910,9 @@ class QueryBuilder<
 
               // Select each safe column with a prefixed alias (e.g., creator_id, creator_display_name)
               for (const col of safeColumns) {
-                joinSelects.push(`${joinInfo.table}.${col} AS "${relationName}_${col}"`);
+                joinSelects.push(
+                  `${joinInfo.table}.${col} AS "${relationName}${JOIN_ALIAS_SEPARATOR}${col}"`
+                );
               }
             }
           }

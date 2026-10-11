@@ -241,6 +241,14 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
       throw new Error('Relation name must be a non-empty string');
     }
 
+    // Relation names are used in SQL aliases, so they must be plain identifiers
+    if (!SAFE_IDENTIFIER.test(name)) {
+      throw new Error(
+        `Relation name '${name}' must be a plain identifier (letters, digits and underscores, ` +
+          'not starting with a digit).'
+      );
+    }
+
     if (!config || typeof config !== 'object') {
       throw new Error(`Relation '${name}' configuration must be an object`);
     }
