@@ -111,7 +111,7 @@ npm run test:types
 - **Model runtime (`src/lib/model.ts`)** – Implements camelCase ↔︎ snake_case mapping, validation/default handling, change tracking, and persistence primitives consumed by every manifest-driven model.
 - **Manifest system (`src/lib/create-model.ts`, `src/lib/model-manifest.ts`)** – Declarative manifests define schema, relations, revision support, and custom methods. `defineModel` returns a lazy proxy constructor whose types are inferred from the manifest.
 - **Query builder (`src/lib/query-builder.ts`)** – Builds SQL fragments for predicates, joins, ordering, pagination, and deletes. `filterWhere` wraps it with typed predicates for day-to-day usage.
-  - Chainables include `orderBy/limit/offset`, `whereIn`, `getJoin` (auto-selects inline or batch join based on cardinality), `whereRelated` (predicate on a related table via manifest metadata), and `chronologicalFeed` for date-backed limit+1 pagination.
+  - Chainables include `orderBy/limit/offset`, `whereIn`, `getJoin` (auto-selects inline or batch join based on cardinality; a to-one relation whose table is already in the query, such as a second relation to the same table, is batch-loaded), `whereRelated` (predicate on a related table via manifest metadata), and `chronologicalFeed` for date-backed limit+1 pagination.
 - **Revision helpers (`src/lib/revision.ts`)** – Adds static/instance helpers (`createFirstRevision`, `newRevision`, etc.) to models flagged with `hasRevisions: true`.
 - **Type helpers (`src/lib/type.ts`)** – Fluent schema builders that feed manifest inference, including virtual field descriptors and multilingual string support via `mlString`.
 
