@@ -1648,16 +1648,7 @@ class QueryBuilder<
     value: unknown,
     options: PredicateOptions = {}
   ): Predicate {
-    let effectiveOperator = operator;
-    if (value === null) {
-      if (operator === '=') {
-        effectiveOperator = 'IS';
-      } else if (operator === '!=') {
-        effectiveOperator = 'IS NOT';
-      }
-    }
-
-    const predicate = this._createPredicate(field, effectiveOperator, value, options);
+    const predicate = this._createPredicate(field, operator, value, options);
     this._where.push(predicate);
     return predicate;
   }
@@ -1706,6 +1697,15 @@ class QueryBuilder<
     value: unknown,
     options: PredicateOptions = {}
   ): BasicPredicate {
+    let effectiveOperator = operator;
+    if (value === null) {
+      if (operator === '=') {
+        effectiveOperator = 'IS';
+      } else if (operator === '!=') {
+        effectiveOperator = 'IS NOT';
+      }
+    }
+
     const { table: explicitTable, column } = this._splitFieldReference(field);
     const tableReference = options.table || explicitTable || null;
     const resolvedColumn = this._resolvePredicateColumn(tableReference, column);
@@ -1713,7 +1713,7 @@ class QueryBuilder<
     const predicate: BasicPredicate = {
       type: 'basic',
       column: resolvedColumn,
-      operator,
+      operator: effectiveOperator,
     };
 
     if (tableReference) {
@@ -1861,6 +1861,11 @@ class QueryBuilder<
 
     if ((operator === 'IS' || operator === 'IS NOT') && predicate.value === null) {
       return `${columnSql} ${operator} NULL`;
+    }
+
+    // PostgreSQL IS predicates require boolean keywords, not placeholders.
+    if ((operator === 'IS' || operator === 'IS NOT') && typeof predicate.value === 'boolean') {
+      return `${columnSql} ${operator} ${predicate.value ? 'TRUE' : 'FALSE'}`;
     }
 
     if (predicate.value === undefined) {
