@@ -71,6 +71,15 @@ export interface SaveOptions extends TransactionOptions {
   updateSensitive?: string[];
 }
 
+export interface UpsertOptions<TData extends JsonObject> extends TransactionOptions {
+  conflictFields: readonly (keyof TData & string)[];
+  updateFields: readonly (keyof TData & string)[];
+  /** Sensitive schema fields explicitly allowed in the conflict update. */
+  updateSensitive?: readonly (keyof TData & string)[];
+  /** Sensitive schema fields to include in the returned instance. */
+  includeSensitive?: readonly (keyof TData & string)[];
+}
+
 export interface DeleteOptions extends TransactionOptions {
   soft?: boolean;
   /**
@@ -499,6 +508,7 @@ export interface ModelConstructor<
     criteria: FilterWhereLiteral<TData, FilterWhereOperators<TData>>
   ): FilterWhereQueryBuilder<TData, TVirtual, TInstance, TRelations>;
   create(data: Partial<TData>, options?: JsonObject): Promise<TInstance>;
+  upsert(data: Partial<TData>, options: UpsertOptions<TData>): Promise<TInstance>;
   update(id: string, data: Partial<TData>): Promise<TInstance>;
   delete(id: string, options?: DeleteOptions): Promise<boolean>;
 

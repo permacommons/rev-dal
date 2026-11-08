@@ -284,6 +284,35 @@ const userStaticMethods = defineStaticMethods(userManifest, {
 export default defineModel(userManifest, { staticMethods: userStaticMethods });
 ```
 
+### Atomic upsert
+
+Non-revisioned models expose `upsert(data, options)` to insert or update a row
+in one PostgreSQL statement:
+
+```typescript
+const override = await EditorOverride.upsert(
+  { userId, status, reason, actorId, decidedAt: new Date() },
+  {
+    conflictFields: ['userId'],
+    updateFields: ['status', 'reason', 'actorId', 'decidedAt'],
+    transaction, // optional existing transaction handle
+  }
+);
+```
+
+`conflictFields` must match a database unique constraint/index; composite keys
+are supported. Both field lists must be non-empty and contain distinct persisted
+schema field names. Field mappings, defaults and validators apply. Each update
+field needs an explicit, defined value in `data`; only listed fields change on
+conflict. The method returns the persisted model instance, including database
+defaults, and rejects unknown and virtual fields. Conflict key values must be
+non-null. Concurrent calls use PostgreSQL's atomic conflict handling.
+
+Sensitive values may be inserted as with `create()`. Updating a sensitive field
+requires listing it in `updateSensitive`; sensitive fields are omitted from the
+returned instance unless listed in `includeSensitive`. Revisioned models reject
+upsert to preserve revision history. `save()` keeps its existing behavior.
+
 ### Type Inference
 
 Manifests drive all type inference:

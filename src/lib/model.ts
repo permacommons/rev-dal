@@ -15,6 +15,7 @@ import type {
   RevisionActor,
   RevisionMetadata,
   SaveOptions,
+  UpsertOptions,
 } from './model-types.js';
 import QueryBuilder from './query-builder.js';
 import type { ModelConstructorLike } from './revision.js';
@@ -919,6 +920,88 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
     const instance = new this(data as Partial<TData & TVirtual>);
     await instance.save(options);
     return instance;
+  }
+
+  /** Atomically insert or update selected fields of a non-revisioned model. */
+  static async upsert<
+    TData extends JsonObject = JsonObject,
+    TVirtual extends JsonObject = JsonObject,
+  >(
+    this: ModelRuntime<TData, TVirtual>,
+    data: Partial<TData>,
+    options: UpsertOptions<TData>
+  ): Promise<ModelInstance<TData, TVirtual>> {
+    if (Object.hasOwn(this.schema, '_revID')) {
+      throw new Error('Upsert is not supported for revisioned models.');
+    }
+    const quote = (identifier: string): string => `"${identifier.replaceAll('"', '""')}"`;
+    const checkField = (field: string): string => {
+      if (!Object.hasOwn(this.schema, field) || this.schema[field].isVirtual) {
+        throw new Error(`Invalid persisted schema field '${field}' in upsert.`);
+      }
+      return this._getDbFieldName(field);
+    };
+    const checkList = (fields: readonly string[], name: string): void => {
+      if (!Array.isArray(fields) || fields.length === 0 || new Set(fields).size !== fields.length) {
+        throw new Error(`${name} must be a non-empty array of distinct schema fields.`);
+      }
+      for (const field of fields) checkField(field);
+    };
+    checkList(options.conflictFields, 'conflictFields');
+    checkList(options.updateFields, 'updateFields');
+    for (const field of Object.keys(data)) checkField(field);
+    for (const field of [...(options.updateSensitive ?? []), ...(options.includeSensitive ?? [])]) {
+      checkField(field);
+    }
+    for (const field of options.updateFields) {
+      if (!Object.hasOwn(data, field) || data[field] === undefined) {
+        throw new Error(`Upsert update field '${field}' requires an explicit insert value.`);
+      }
+      if (this.schema[field].isSensitive && !options.updateSensitive?.includes(field)) {
+        throw new Error(`Upsert update of sensitive field '${field}' requires updateSensitive.`);
+      }
+    }
+    const instance = new this(data as Partial<TData & TVirtual>) as unknown as Model<
+      TData,
+      TVirtual
+    >;
+    instance._validate();
+    for (const field of options.conflictFields) {
+      if (instance.getValue(field) == null) {
+        throw new Error(`Upsert conflict field '${field}' requires a non-null value.`);
+      }
+    }
+    const fields = Object.keys(this.schema)
+      .filter(field => !this.schema[field].isVirtual)
+      .map(field => checkField(field))
+      .filter(field => instance._data[field] !== undefined);
+    const updates = options.updateFields.map(field => {
+      const column = quote(checkField(field));
+      return `${column} = EXCLUDED.${column}`;
+    });
+    const returning = this.getColumnNames([...(options.includeSensitive ?? [])]).map(quote);
+    try {
+      const result = await this.dal.query(
+        `INSERT INTO ${this.tableName} (${fields.map(quote).join(', ')})
+         VALUES (${fields.map((_, index) => `$${index + 1}`).join(', ')})
+         ON CONFLICT (${options.conflictFields.map(field => quote(checkField(field))).join(', ')})
+         DO UPDATE SET ${updates.join(', ')} RETURNING ${returning.join(', ')}`,
+        fields.map(field => instance._data[field]),
+        options.transaction ?? null
+      );
+      const persisted = this._createInstance(result.rows[0]) as unknown as Model<TData, TVirtual>;
+      // Construction applies defaults, including defaults on omitted sensitive fields.
+      for (const field of this.getSensitiveFieldNames()) {
+        if (!options.includeSensitive?.includes(field)) {
+          delete persisted._data[this._getDbFieldName(field)];
+        }
+      }
+      persisted._trackOriginalValues();
+      persisted.generateVirtualValues();
+      return persisted as unknown as ModelInstance<TData, TVirtual>;
+    } catch (error) {
+      throw convertPostgreSQLError(error);
+    }
   }
 
   /*
