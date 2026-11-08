@@ -469,6 +469,55 @@ const specificRevision = await WikiPage.filterWhere({})
   .first();
 ```
 
+### Selecting fields without loading models
+
+Use `select(...fields)` as the final query-building step to fetch only the
+persisted fields you need. It returns a promise-like query with `run()` and
+`first()`. Results are plain objects with exactly the selected properties, typed
+as read-only and shallowly frozen at runtime. They have no model methods such as
+`save()`. Nested JSON values are not frozen.
+
+```ts
+const accounts = await Account.filterWhere({ isActive: true })
+  .orderBy('id')
+  .limit(25)
+  .select('id', 'displayName');
+// Only id and displayName are selected in SQL; other fields are unavailable.
+
+const revisionIds = [currentRevId, ...sourceRevisionIds];
+const counters = await WikiPage.filterWhere({})
+  .getAllRevisions(page.id)
+  .revisionData({ _revID: WikiPage.ops.in(revisionIds) })
+  .select('_revID', 'bodyEditCounts');
+// Fetches revision IDs and counters without transferring historical bodies.
+
+const account = await Account.filterWhere({ id: accountId })
+  .includeSensitive('email') // Required if email is marked sensitive
+  .select('id', 'email')
+  .first(); // Selected row or null
+```
+
+Selections use public model field names, including camelCase mappings and, on
+revision-enabled models, metadata such as `_revID` and `_revDate`. Returned names
+and value types follow those fields; SQL columns are aliased to the public names.
+Values come from the PostgreSQL driver without model defaults, virtual-field
+calculation, or hydration hooks. Unknown fields and virtual fields are rejected.
+Selecting a sensitive field without an explicit `includeSensitive()` opt-in
+throws; opting in does not add that field unless it is also selected.
+
+Apply filters, revision-history helpers, sorting, pagination, and sensitive-field
+opt-ins before `select()`. The projection captures the query and parameter values
+at that point; later changes to the original builder do not affect it. Normal
+revision guards still apply unless disabled with the existing revision helpers.
+`first()` limits the query to one row and preserves `limit(0)`.
+
+An empty selection is rejected. Projection cannot be combined with `getJoin()`,
+`whereRelated()` (which currently creates a join), or `groupBy()`; no identity
+or grouping columns are added implicitly. Use
+`aggregateGrouped()` for grouped aggregates. Existing `defineView()` / `fetchView()`
+views continue to project hydrated models in JavaScript and do not reduce SQL
+result columns.
+
 ### Deleting records
 
 - `delete()` requires at least one predicate; an unfiltered builder throws instead of emptying the table. `deleteById(id)` on a `filterWhere` builder also respects the builder's predicates.

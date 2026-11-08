@@ -72,5 +72,6 @@ export {
 
 export type { JoinApplyBuilder, JoinOptions, JoinRelationOptions };
 export type { DalDebugLogger, DalLanguageProvider };
+export type { ProjectedQuery, SelectableData } from './lib/model-types.js';
 
 export default createDataAccessLayer;
