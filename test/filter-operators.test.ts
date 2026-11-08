@@ -38,8 +38,6 @@ type Case = {
   orParams: unknown[];
 };
 
-// `or` is null where the or() form is a known bug to be fixed separately:
-// neq(null) inside or() compares with != NULL, which never matches.
 const cases: Case[] = [
   {
     name: 'neq value',
@@ -54,8 +52,16 @@ const cases: Case[] = [
     make: () => ops.neq(null),
     and: 'test_table.name IS NOT NULL',
     andParams: [],
-    or: null,
-    orParams: [null, 'other'],
+    or: '(test_table.name IS NOT NULL OR test_table.id = $1)',
+    orParams: ['other'],
+  },
+  {
+    name: 'not',
+    make: () => ops.not(),
+    and: 'test_table.name IS NOT TRUE',
+    andParams: [],
+    or: '(test_table.name IS NOT TRUE OR test_table.id = $1)',
+    orParams: ['other'],
   },
   {
     name: 'lt',
