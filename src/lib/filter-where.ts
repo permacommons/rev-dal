@@ -18,7 +18,9 @@ import type {
   ModelConstructor,
   ModelInstance,
   NumericKeys,
+  ProjectedQuery,
   RevisionDataRecord,
+  SelectableData,
 } from './model-types.js';
 import QueryBuilder, { normalizeSortDirection } from './query-builder.js';
 
@@ -504,6 +506,18 @@ class FilterWhereBuilder<
   includeSensitive(fields: string | string[]): this {
     this._builder.includeSensitive(fields);
     return this;
+  }
+
+  select<
+    const Fields extends readonly [
+      Extract<keyof SelectableData<TData, TInstance>, string>,
+      ...Extract<keyof SelectableData<TData, TInstance>, string>[],
+    ],
+  >(...fields: Fields): ProjectedQuery<Pick<SelectableData<TData, TInstance>, Fields[number]>> {
+    this._ensureRevisionFilters();
+    return this._builder._project(fields) as ProjectedQuery<
+      Pick<SelectableData<TData, TInstance>, Fields[number]>
+    >;
   }
 
   /**

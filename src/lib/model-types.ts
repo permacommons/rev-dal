@@ -303,6 +303,16 @@ export type VersionedModelInstance<
 
 export type RevisionDataRecord = JsonObject & RevisionFieldMap;
 
+/** Persisted fields available to a projection, including versioned metadata. */
+export type SelectableData<TData, TInstance> = TData &
+  (TInstance extends { newRevision: unknown } ? RevisionFieldMap : Record<never, never>);
+
+/** A terminal query returning plain, shallowly frozen rows rather than models. */
+export interface ProjectedQuery<Row> extends PromiseLike<Readonly<Row>[]> {
+  run(): Promise<Readonly<Row>[]>;
+  first(): Promise<Readonly<Row> | null>;
+}
+
 export type InstanceMethod<TInstance extends ModelInstance = ModelInstance> = (
   this: TInstance,
   ...args: unknown[]
@@ -395,6 +405,12 @@ export interface FilterWhereQueryBuilder<
   and(
     criteria: FilterWhereLiteral<TData, FilterWhereOperators<TData>>
   ): FilterWhereQueryBuilder<TData, TVirtual, TInstance, TRelations>;
+  select<
+    const Fields extends readonly [
+      Extract<keyof SelectableData<TData, TInstance>, string>,
+      ...Extract<keyof SelectableData<TData, TInstance>, string>[],
+    ],
+  >(...fields: Fields): ProjectedQuery<Pick<SelectableData<TData, TInstance>, Fields[number]>>;
   or(
     criteria: FilterWhereLiteral<TData, FilterWhereOperators<TData>>
   ): FilterWhereQueryBuilder<TData, TVirtual, TInstance, TRelations>;

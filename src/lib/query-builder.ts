@@ -1,3 +1,4 @@
+import { cloneRowValue } from './clone.js';
 import { convertPostgreSQLError } from './errors.js';
 import type Model from './model.js';
 import type { ModelRuntime } from './model.js';
@@ -7,6 +8,7 @@ import type {
   JsonObject,
   ModelConstructor,
   ModelInstance,
+  ProjectedQuery,
 } from './model-types.js';
 import { debug } from './runtime.js';
 import { NumberType } from './type.js';
@@ -362,6 +364,66 @@ class QueryBuilder<
   includeSensitive(fields: string | string[]): this {
     this._includeSensitive = Array.isArray(fields) ? fields : [fields];
     return this;
+  }
+
+  /** Compile an independent, terminal projection without model hydration. */
+  _project(fields: readonly string[]): ProjectedQuery<Record<string, unknown>> {
+    if (!fields.length) throw new TypeError('select() requires at least one field.');
+    if (
+      this._joins.length ||
+      Object.keys(this._complexJoins ?? {}).length ||
+      this._groupBy.length
+    ) {
+      throw new TypeError('select() cannot be combined with getJoin() or groupBy().');
+    }
+    const quote = (identifier: string) => `"${identifier.replaceAll('"', '""')}"`;
+    const selected = [...new Set(fields)];
+    const columns = selected.map(field => {
+      const definition = Object.hasOwn(this.modelClass.schema, field)
+        ? this.modelClass.schema[field]
+        : undefined;
+      if (!definition || definition.isVirtual) {
+        throw new TypeError(`select() requires a persisted model field; received '${field}'.`);
+      }
+      if (definition.isSensitive && !this._includeSensitive.includes(field)) {
+        throw new TypeError(`select('${field}') requires includeSensitive('${field}').`);
+      }
+      const column = this._resolveFieldName(field);
+      if (typeof column !== 'string') throw new TypeError('Invalid selected column.');
+      return `${this.tableName.split('.').map(quote).join('.')}.${quote(column)} AS ${quote(field)}`;
+    });
+
+    // Compile SQL now: later builder mutations, including nested predicate values,
+    // cannot affect this query. The original SELECT list and limit stay intact.
+    const snapshot = Object.assign(Object.create(Object.getPrototypeOf(this)), this) as this;
+    snapshot._select = columns;
+    const all = snapshot._buildSelectQuery();
+    snapshot._limit = this._limit === 0 ? 0 : 1;
+    const first = snapshot._buildSelectQuery();
+    all.params = cloneRowValue(all.params);
+    first.params = cloneRowValue(first.params);
+    const dal = this.dal;
+    const execute = async ({ sql, params }: { sql: string; params: unknown[] }) => {
+      try {
+        const result = await dal.query(sql, cloneRowValue(params));
+        return result.rows.map(row =>
+          Object.freeze(Object.fromEntries(selected.map(field => [field, row[field]])))
+        );
+      } catch (error) {
+        throw convertPostgreSQLError(error);
+      }
+    };
+    const run = () => execute(all);
+    return Object.freeze({
+      run,
+      first: async () => (await execute(first))[0] ?? null,
+      then: <TResult1 = Readonly<Record<string, unknown>>[], TResult2 = never>(
+        onfulfilled?:
+          | ((value: Readonly<Record<string, unknown>>[]) => TResult1 | PromiseLike<TResult1>)
+          | null,
+        onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null
+      ) => run().then(onfulfilled, onrejected),
+    });
   }
 
   /**
