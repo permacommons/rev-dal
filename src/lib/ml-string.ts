@@ -95,9 +95,8 @@ const mlString = {
    * Obtain a type definition for a multilingual string object which
    * permits only strings in the configured language provider.
    *
-   * Storage format: Text fields store "HTML-safe text" with entities escaped
-   * (e.g., `My &amp; Co`) but HTML tags removed/rejected. This allows safe
-   * rendering in HTML templates while preserving user's literal text input.
+   * Validation does not transform strings or escape entities. Applications
+   * using entity-escaped storage must escape input before passing it here.
    *
    * Options:
    * - `maxLength`: maximum length enforced for each value
@@ -105,7 +104,8 @@ const mlString = {
    * - `allowHTML`: when true, allows HTML tags (default: false for security)
    *
    * Note: HTML entities like `&amp;` are allowed regardless of `allowHTML` setting.
-   * Only actual HTML tags like `<script>` are validated.
+   * With allowHTML=false, rejects any string changed by striptags, including
+   * some literal angle-bracket text such as `I <3 JS`. Entities are not decoded.
    */
   getSchema({
     maxLength,
@@ -190,13 +190,13 @@ const mlString = {
   },
 
   /**
-   * Obtain a schema that enforces HTML-safe text multilingual strings.
+   * Obtain a multilingual string schema that rejects tag-like input.
    *
-   * HTML-safe text format:
-   * - HTML entities are escaped (e.g., `&` → `&amp;`, `<` → `&lt;`)
-   * - HTML tags are rejected
-   * - User input like "I like <b>" is preserved as "I like &lt;b&gt;"
-   * - Safe to render directly in HTML templates without additional escaping
+   * Rejects strings changed by striptags; accepted strings are unchanged.
+   * Does not escape or decode entities: raw ampersands and quotes pass, as
+   * does entity-escaped markup. Callers must escape literal angle brackets
+   * before validation to preserve them under an escaped-storage convention.
+   * Passing validation alone does not guarantee safe HTML rendering.
    *
    * Use for: labels, titles, names, descriptions (non-HTML fields)
    * Array validation may be enabled for multiple values per language.
@@ -226,8 +226,10 @@ const mlString = {
    * Obtain a schema for rich text objects containing both source and rendered content.
    *
    * Rich text format: { text: MlString, html: MlString }
-   * - `text`: HTML-safe markdown source (entities escaped, tags rejected)
-   * - `html`: Rendered HTML from markdown (contains actual HTML markup)
+   * - `text`: Uses the same tag-rejection validation as getSafeTextSchema()
+   * - `html`: Allows HTML markup without sanitization
+   * Neither branch escapes or decodes entities; callers handle escaping and
+   * HTML sanitization before storage according to their application convention.
    *
    * Use for: team.description, team.rules, userMeta.bio
    * (fields that store both markdown source and cached HTML output)
@@ -375,11 +377,13 @@ const mlString = {
   },
 
   /**
-   * Strip HTML tags and decode entities from multilingual string.
+   * Decode entities first, then strip tags from a multilingual string.
    *
    * Use for external/adapter data that may contain unwanted HTML formatting.
-   * After stripping, the result should be entity-escaped again before storage
-   * to maintain the "HTML-safe text" format.
+   * This is lossy: escaped markup such as `&lt;b&gt;Title&lt;/b&gt;` becomes
+   * `Title`, and literal `I <3 JS` becomes `I ` under striptags rules.
+   * The output is not re-escaped. Applications using entity-escaped storage
+   * must escape the result before storing it.
    *
    * Example: `<b>Label</b> &amp; Co` → `Label & Co`
    * Then escape for storage: `Label & Co` → `Label &amp; Co`
