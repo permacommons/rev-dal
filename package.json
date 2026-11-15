@@ -1,6 +1,6 @@
 {
   "name": "rev-dal",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A PostgreSQL data access layer with revision support and rich model typing",
   "license": "CC0-1.0",
   "repository": {
