@@ -19,6 +19,7 @@ Before submitting changes, run:
 npm run lint
 npm run typecheck
 npm run test:types
+npm run test:release
 npm test
 ```
 
@@ -72,3 +73,11 @@ npm run test:types
 - `src/index.ts` – Public entry point that re-exports constructors, types, and helpers.
 - `src/lib/` – Core implementation (connection management, manifests, query builder, filters, revision system, schema types).
 - `setup-db-grants.sql` – Grants applied to shared environments.
+
+## Releases
+
+Use the repository's own GitHub Actions workflows to prepare a release PR, test
+the packed library against both consumers, and publish through npm trusted
+publishing. See the [release runbook](AGENTS.md#releases) for the version policy,
+one-time npm setup, dispatch commands, and retry procedures. Release-tool tests
+run with `npm run test:release` and do not require PostgreSQL.

@@ -1,14 +1,24 @@
 name: Tests
 
 on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      commit:
+        required: true
+        type: string
   push:
     branches:
       - main
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16
@@ -26,6 +36,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit || github.sha }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -61,3 +73,99 @@ jobs:
 
       - name: Run type tests
         run: npm run test:types
+
+      - name: Check release tooling, lint, and types
+        run: |
+          npm run test:release
+          npm run lint
+          npm run typecheck
+
+      - name: Build and pack once
+        run: |
+          npm run build
+          mkdir -p "$RUNNER_TEMP/release-artifact"
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/release-artifact"
+          mv "$RUNNER_TEMP"/release-artifact/*.tgz "$RUNNER_TEMP/release-artifact/rev-dal.tgz"
+          printf 'Candidate commit: %s\n\n' "$(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          sha512sum "$RUNNER_TEMP/release-artifact/rev-dal.tgz" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Smoke-test the packed exports and declarations
+        run: node scripts/check-package.mjs "$RUNNER_TEMP/release-artifact/rev-dal.tgz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rev-dal-package
+          path: ${{ runner.temp }}/release-artifact/rev-dal.tgz
+          retention-days: 14
+          overwrite: true
+
+  consumers:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer: [lib.reviews, agpwiki]
+    services:
+      postgres:
+        image: postgres:16
+        ports: ['5432:5432']
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: permacommons/${{ matrix.consumer }}
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+      - uses: actions/download-artifact@v4
+        with:
+          name: rev-dal-package
+          path: ${{ runner.temp }}/release-artifact
+      - name: Record consumer commit
+        env:
+          CONSUMER: ${{ matrix.consumer }}
+        run: |
+          printf '%s main commit: %s\n' "$CONSUMER" "$(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Prepare consumer databases
+        env:
+          PGPASSWORD: postgres
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          psql -h localhost -U postgres -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE libreviews_user LOGIN PASSWORD 'libreviews_password';
+          CREATE DATABASE libreviews OWNER libreviews_user;
+          CREATE DATABASE libreviews_test OWNER libreviews_user;
+          CREATE ROLE agpwiki_user LOGIN CREATEDB PASSWORD 'agpwiki_password';
+          CREATE DATABASE agpwiki_test OWNER agpwiki_user;
+          SQL
+          psql -h localhost -U postgres -d agpwiki_test -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS "pgcrypto";'
+      - name: Install consumer dependencies
+        run: npm ci
+      - name: Install the candidate package in this temporary checkout
+        run: npm install --no-save "$RUNNER_TEMP/release-artifact/rev-dal.tgz"
+      - name: Apply lib.reviews database grants
+        if: matrix.consumer == 'lib.reviews'
+        env:
+          PGPASSWORD: postgres
+        run: >-
+          psql -h localhost -U postgres -v ON_ERROR_STOP=1
+          -v app_db=libreviews -v app_user=libreviews_user
+          -v test_db=libreviews_test -v test_user=libreviews_user
+          -f node_modules/rev-dal/setup-db-grants.sql
+      - name: Check consumer types and tests
+        run: |
+          npm run typecheck
+          npm test

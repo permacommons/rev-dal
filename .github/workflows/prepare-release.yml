@@ -1,0 +1,58 @@
+name: Prepare release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'patch, minor, major, or an explicit stable version (first release: 0.2.0)'
+        required: true
+        type: string
+      notes:
+        description: 'Markdown release notes, including any consumer migration instructions'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+      - name: Update version and write release notes
+        id: release
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          RELEASE_NOTES: ${{ inputs.notes }}
+        run: node scripts/prepare-release.mjs "$REQUESTED_VERSION"
+      - name: Open release PR and dispatch its checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+          BRANCH: ${{ steps.release.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$BRANCH"
+          git add package.json package-lock.json "releases/$VERSION.md"
+          git commit -m "chore: release $VERSION"
+          git push origin "$BRANCH"
+          gh pr create --base main --head "$BRANCH" --title "chore: release $VERSION" --body-file "$RUNNER_TEMP/release-pr.md"
+          gh workflow run lint.yml --ref "$BRANCH"
+          gh workflow run tests.yml --ref "$BRANCH"
+          printf 'Release PR: %s\n\nCommit: %s\n' "$(gh pr view "$BRANCH" --json url --jq .url)" "$(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
