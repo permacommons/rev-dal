@@ -1049,7 +1049,7 @@ class QueryBuilder<
     const mainRows = await this._processResults(mainResult.rows as Record<string, unknown>[]);
 
     // Process each complex join
-    for (const [relationName, joinSpec] of Object.entries(this._complexJoins)) {
+    for (const [relationName, joinSpec] of Object.entries(this._complexJoins ?? {})) {
       await this._processComplexJoin(mainRows, relationName, joinSpec);
     }
 
@@ -1443,7 +1443,7 @@ class QueryBuilder<
     }
 
     // Process rows with joined data
-    const processedRows = [];
+    const processedRows: TInstance[] = [];
     for (const row of rows) {
       const mainData: Record<string, unknown> = {};
       const joinedData: Record<string, Record<string, unknown>> = {};
@@ -1850,14 +1850,14 @@ class QueryBuilder<
     return { table, column };
   }
 
-  _buildWhereClause({ qualifyColumns = false } = {}) {
+  _buildWhereClause({ qualifyColumns = false } = {}): { sql: string; params: unknown[] } {
     if (!Array.isArray(this._where) || this._where.length === 0) {
       this._params = [];
       this._paramIndex = 1;
       return { sql: '', params: [] };
     }
 
-    const params = [];
+    const params: unknown[] = [];
     let nextIndex = 1;
 
     const context = {
@@ -1867,7 +1867,7 @@ class QueryBuilder<
       params,
     };
 
-    const fragments = [];
+    const fragments: string[] = [];
     for (const predicate of this._where) {
       const fragment = this._renderPredicate(predicate, context);
       if (fragment) {
@@ -1891,7 +1891,7 @@ class QueryBuilder<
 
     if (predicate.type === 'group') {
       const conjunction = predicate.conjunction || 'AND';
-      const inner = [];
+      const inner: string[] = [];
       for (const child of predicate.predicates || []) {
         const rendered = this._renderPredicate(child, context);
         if (rendered) {
@@ -1997,11 +1997,14 @@ class QueryBuilder<
 
         // Add columns from simple joins with prefixed aliases
         if (this._simpleJoins) {
-          const joinSelects = [];
+          const joinSelects: string[] = [];
           for (const [relationName, joinInfo] of Object.entries(this._simpleJoins)) {
             if (joinInfo && joinInfo.table) {
               // Get the related model to get safe (non-sensitive) column names
               const RelatedModel = this._getRelatedModel(relationName, joinInfo);
+              if (!RelatedModel) {
+                throw new Error(`Related model not found for relation '${relationName}'.`);
+              }
               const safeColumns = RelatedModel.getSafeColumnNames();
 
               // Select each safe column with a prefixed alias (e.g., creator_id, creator_display_name)

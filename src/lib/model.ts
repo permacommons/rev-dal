@@ -1454,8 +1454,8 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
 
       const idsToAdd = desiredIds.filter(id => !existingIds.has(id));
       if (idsToAdd.length > 0) {
-        const values = [];
-        const params = [];
+        const values: string[] = [];
+        const params: Array<string | undefined> = [];
         let paramIndex = 1;
 
         for (const itemId of idsToAdd) {
@@ -1505,13 +1505,14 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
   static _ensureRevisionHandler(
     this: RuntimeModel<JsonObject, JsonObject, Model<JsonObject, JsonObject>>,
     handlerName: RevisionHandlerName
-  ) {
+  ): NonNullable<RevisionHandlerMap<Model<JsonObject, JsonObject>>[RevisionHandlerName]> {
     if (!this._revisionHandlers) {
       this._revisionHandlers = {};
     }
 
-    if (this._revisionHandlers[handlerName]) {
-      return this._revisionHandlers[handlerName];
+    const existing = this._revisionHandlers[handlerName];
+    if (existing) {
+      return existing;
     }
 
     const hasRevisionFields =
@@ -1523,20 +1524,16 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
 
     switch (handlerName) {
       case 'newRevision':
-        this._revisionHandlers.newRevision = revision.getNewRevisionHandler(
+        return (this._revisionHandlers.newRevision = revision.getNewRevisionHandler(
           this as unknown as ModelConstructorLike
-        );
-        break;
+        ));
       case 'deleteAllRevisions':
-        this._revisionHandlers.deleteAllRevisions = revision.getDeleteAllRevisionsHandler(
+        return (this._revisionHandlers.deleteAllRevisions = revision.getDeleteAllRevisionsHandler(
           this as unknown as ModelConstructorLike
-        );
-        break;
+        ));
       default:
         throw new Error(`Unknown revision handler requested: ${handlerName}`);
     }
-
-    return this._revisionHandlers[handlerName];
   }
 
   async newRevision(user: RevisionActor | null = null, options: RevisionMetadata = {}) {

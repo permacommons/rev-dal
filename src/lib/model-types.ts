@@ -622,5 +622,5 @@ export interface DataAccessLayer {
   getRegisteredModels(): Map<string, ModelConstructor>;
   getModelRegistry?(): unknown;
   transaction?<T>(callback: (client: PoolClient) => Promise<T>): Promise<T>;
-  pool?: Pool;
+  pool?: Pool | null;
 }

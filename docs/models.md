@@ -233,7 +233,11 @@ upsert to preserve revision history. `save()` keeps its existing behavior.
 
 ### Type Inference
 
-Manifests drive all type inference:
+Manifests drive all type inference. With TypeScript's `strictNullChecks` enabled,
+required schema fields infer their value type, while optional fields also allow
+`null` and `undefined`. Defaults do not by themselves mark a field as required.
+
+The following helpers derive model types from manifests:
 
 - **Low-level helpers** (internal):
   - `InferData` and `InferVirtual` extract stored and virtual fields from schema builders
