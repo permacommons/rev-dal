@@ -5,7 +5,9 @@ import { Pool } from 'pg';
 import mlString from './ml-string.js';
 import type { ModelSchema } from './model.js';
 import Model from './model.js';
-import ModelRegistry from './model-registry.js';
+import { getModelHandleTableName } from './model-handle.js';
+import type { InferConstructor, ModelManifest } from './model-manifest.js';
+import ModelRegistry, { getRegisteredModelKey } from './model-registry.js';
 import type {
   DataAccessLayer as DataAccessLayerContract,
   JsonObject,
@@ -17,6 +19,37 @@ import { debug } from './runtime.js';
 import types from './type.js';
 
 type PoolLike = Pool | PoolClient;
+
+/**
+ * Turn a `getModel()` argument into a registry lookup key. Handles are
+ * checked first so their proxies' resolver-backed traps are never triggered.
+ */
+function resolveModelLookupName(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  const handleTableName = getModelHandleTableName(value);
+  if (handleTableName !== undefined) {
+    return handleTableName;
+  }
+
+  const registryKey = getRegisteredModelKey(value);
+  if (registryKey !== undefined) {
+    return registryKey;
+  }
+
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    const { tableName } = value as { tableName?: unknown };
+    if (typeof tableName === 'string' && tableName.length > 0) {
+      return tableName;
+    }
+  }
+
+  throw new TypeError(
+    'getModel() expects a model name, a defineModel()/referenceModel() handle, a registered model constructor, or a model manifest with a non-empty tableName.'
+  );
+}
 
 type DataAccessLayerConfig = (PoolConfig & JsonObject) & Partial<PostgresConfig>;
 
@@ -284,14 +317,38 @@ class DataAccessLayer implements DataAccessLayerContract {
   }
 
   /**
-   * Get an existing model by name
-   * @param name - Model name
-   * @returns Model constructor
+   * Get a model registered on this DAL instance.
+   *
+   * Pass a table name or registry key for an untyped lookup. Pass a
+   * `defineModel()`/`referenceModel()` handle, or a constructor registered on
+   * another DAL, to get this DAL's constructor for the same model typed like
+   * the argument. Pass a model manifest to get it typed from the manifest.
+   *
+   * Handle types include `statics` passed to `defineModel()` and fallback
+   * methods passed to `referenceModel()`; those exist only on the handle, not
+   * on the returned constructor.
+   *
+   * Every form reads only this instance's registry: it never consults the
+   * bootstrap resolver, queries the database or registers models. Handles and
+   * manifests resolve by their manifest `tableName`; constructors by the
+   * registry key they were registered under.
+   *
+   * The non-string forms are typing hints; they do not check that the
+   * argument matches the registered model's schema.
+   *
+   * @param nameOrModel - Table name, registry key, model handle, constructor or manifest
+   * @returns The constructor registered on this DAL
+   * @throws Error when no model is registered under that name
+   * @throws TypeError when the argument is not a name, handle, registered constructor or manifest
    */
   getModel<TData extends JsonObject = JsonObject, TVirtual extends JsonObject = JsonObject>(
     name: string
-  ): ModelConstructor<TData, TVirtual> {
-    const model = this.modelRegistry.get<TData, TVirtual>(name);
+  ): ModelConstructor<TData, TVirtual>;
+  getModel<Model extends ModelConstructor>(model: Model): Model;
+  getModel<Manifest extends ModelManifest>(manifest: Manifest): InferConstructor<Manifest>;
+  getModel(nameOrModel: string | ModelConstructor | ModelManifest): unknown {
+    const name = resolveModelLookupName(nameOrModel);
+    const model = this.modelRegistry.get(name);
     if (!model) {
       throw new Error(`Model '${name}' not found`);
     }
