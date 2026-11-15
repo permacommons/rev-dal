@@ -20,7 +20,7 @@ import type {
 import QueryBuilder from './query-builder.js';
 import type { ModelConstructorLike } from './revision.js';
 import revision from './revision.js';
-import { type QueryExecutor, runInTransaction } from './transaction.js';
+import { assertTransactionClient, type QueryExecutor, runInTransaction } from './transaction.js';
 
 /**
  * Shape each manifest schema entry must satisfy. The type system extracts the
@@ -931,6 +931,7 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
     data: Partial<TData>,
     options: UpsertOptions<TData>
   ): Promise<ModelInstance<TData, TVirtual>> {
+    assertTransactionClient(options.transaction);
     if (Object.hasOwn(this.schema, '_revID')) {
       throw new Error('Upsert is not supported for revisioned models.');
     }
@@ -1229,6 +1230,7 @@ class Model<TData extends JsonObject = JsonObject, TVirtual extends JsonObject =
    * @returns This instance
    */
   async save(options: SaveOptions = {}) {
+    assertTransactionClient(options.transaction);
     try {
       // Detect in-place modifications to JSONB fields before validation
       this._detectInPlaceChanges();

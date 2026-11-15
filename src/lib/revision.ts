@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import isUUID from 'is-uuid';
+import type { PoolClient } from 'pg';
 import { cloneRowValue } from './clone.js';
 import {
   DocumentNotFound,
@@ -18,7 +19,7 @@ import type {
 } from './model-types.js';
 import type { JoinOptions } from './query-builder.js';
 import { isRevisionSummaryEnabled } from './runtime.js';
-import { type QueryExecutor, runInTransaction } from './transaction.js';
+import { runInTransaction } from './transaction.js';
 import types from './type.js';
 
 /**
@@ -84,7 +85,7 @@ export interface RevisionHelpers {
   ): (
     this: TInstance,
     user: RevisionActor | null,
-    options?: { tags?: string[]; transaction?: QueryExecutor | null }
+    options?: { tags?: string[]; transaction?: PoolClient | null }
   ) => Promise<VersionedModelInstance<TData, TVirtual>>;
   getNotStaleOrDeletedGetHandler<
     TData extends JsonObject,
@@ -303,10 +304,7 @@ const revision: RevisionHelpers = {
     const deleteAllRevisions = async function (
       this: TInstance,
       user: RevisionActor | null,
-      {
-        tags = [],
-        transaction = null,
-      }: { tags?: string[]; transaction?: QueryExecutor | null } = {}
+      { tags = [], transaction = null }: { tags?: string[]; transaction?: PoolClient | null } = {}
     ) {
       const id = this.id;
       const deletionTags = ['delete', ...tags];

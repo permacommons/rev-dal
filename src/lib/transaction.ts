@@ -1,7 +1,22 @@
-import type { Pool, PoolClient } from 'pg';
+import type { PoolClient } from 'pg';
 import type { DataAccessLayer } from './model-types.js';
 
-export type QueryExecutor = Pool | PoolClient;
+export type QueryExecutor = PoolClient;
+
+export function assertTransactionClient(
+  client: unknown
+): asserts client is PoolClient | null | undefined {
+  if (
+    client != null &&
+    (typeof client !== 'object' ||
+      typeof (client as PoolClient).query !== 'function' ||
+      typeof (client as PoolClient).release !== 'function')
+  ) {
+    throw new TypeError(
+      'transaction must be a checked-out PostgreSQL client, not a pool. Use dal.transaction().'
+    );
+  }
+}
 
 /**
  * Run `callback` inside a transaction.
@@ -19,6 +34,8 @@ export async function runInTransaction<T>(
   executor: QueryExecutor | null | undefined,
   callback: (client: QueryExecutor) => Promise<T>
 ): Promise<T> {
+  assertTransactionClient(executor);
+
   if (executor) {
     return callback(executor);
   }

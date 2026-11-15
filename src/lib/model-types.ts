@@ -62,7 +62,7 @@ export type FilterWhereLiteral<TRecord extends JsonObject, TOps> = Partial<{
 }>;
 
 export interface TransactionOptions {
-  transaction?: Pool | PoolClient | null;
+  transaction?: PoolClient | null;
 }
 
 export interface SaveOptions extends TransactionOptions {
