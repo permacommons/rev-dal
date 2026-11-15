@@ -49,11 +49,11 @@ export async function publishRelease(
     command('npm', ['publish', tarball, '--ignore-scripts', '--access', 'public', '--provenance'], {
       stdio: 'inherit',
     });
-    // Wait briefly for the accepted publication to reach registry read replicas.
-    for (let attempt = 0; attempt < 5; attempt++) {
+    // npm may process an accepted publication for several minutes before exposing it.
+    for (let attempt = 0; attempt < 60; attempt++) {
       response = await registry(registryUrl);
       if (response.ok || (response.status !== 404 && response.status < 500)) break;
-      await wait(2000);
+      await wait(5000);
     }
   }
   if (!response.ok) throw new Error(`Registry verification failed: ${response.status}`);
