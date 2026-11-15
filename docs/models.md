@@ -26,7 +26,61 @@ Importing a plain manifest alone does not register it; import the module that ca
 imports as well. Configure the resolver before initializing models so lazy relation
 targets can resolve through the registry. Call model methods after initialization.
 
-The DAL is initialised once at startup. Tests and fixtures may spin up isolated instances; disconnecting a DAL clears its registry so cached constructors do not leak across runs. Model proxies and references use the globally configured bootstrap resolver; when switching DAL instances, update that resolver to point at the intended instance.
+The DAL is initialised once at startup. Tests and fixtures may spin up isolated instances; disconnecting a DAL clears its registry so cached constructors do not leak across runs. Model proxies and references use the globally configured bootstrap resolver; when switching DAL instances, update that resolver to point at the intended instance, or resolve models from the instance itself as described below.
+
+### Resolving Models from a DAL Instance
+
+Each DAL keeps its own registry of constructors. `dal.getModel()` reads only that
+registry, so code that receives a DAL can use it without touching the global
+resolver:
+
+```ts
+import type { DataAccessLayer } from 'rev-dal/lib/model-types';
+import User from './models/user.js';
+
+export async function getDisplayNames(dal: DataAccessLayer, userIds: string[]) {
+  const Users = dal.getModel(User);
+  return Users.filterWhere({}).whereIn('id', userIds).select('id', 'displayName');
+}
+```
+
+`getModel()` accepts:
+
+| Argument | Result type |
+| --- | --- |
+| `defineModel()` or `referenceModel()` handle, including one cast to a model type (such as `referenceModel(manifest) as UserModel`) | This DAL's constructor for the handle's manifest, typed like the handle. A `defineModel()` handle's type includes methods passed in its options. |
+| Model manifest | `InferConstructor<typeof manifest>`, including methods declared inside the manifest. Methods passed separately to `defineModel()` are attached at runtime but missing from the type; pass the handle to get them. |
+| Model constructor registered on another DAL | This DAL's constructor for the same model, found by the registry key the argument was registered under, and typed like the argument. |
+| Table name or registry key | Untyped `ModelConstructor`, or the record types you pass as type arguments. |
+
+What rev-dal guarantees:
+
+- The returned value is the constructor registered on that DAL, the same one
+  `dal.getModel(manifest.tableName)` returns. Its queries, writes, revision helpers
+  and relation loading use that DAL.
+- Lookup is synchronous. It does not query the database, register models, or call
+  the bootstrap resolver. Register models first (for example with
+  `initializeManifestModels(dal)`).
+- A model missing from the DAL throws `Model '<tableName>' not found`, even if
+  another DAL or the global resolver has it. After `disconnect()`, lookups fail
+  until models are registered again.
+- Handles and manifests resolve by their manifest `tableName`; on a DAL with a
+  `schemaNamespace`, that is the registry key. Anything that is not a name,
+  handle, registered constructor or manifest with a non-empty `tableName` throws
+  a `TypeError`.
+
+What it does not do:
+
+- Check that a manifest matches the registered model. The manifest only supplies
+  types, so pass the manifest the model was defined with.
+- Change what your custom methods call. A method that uses another model through
+  its global handle or `referenceModel()` still resolves that model globally; use
+  `this.dal.getModel(...)` inside the method to stay on the same DAL.
+- Copy handle-only values. `defineModel()`'s `statics` and the fallback methods
+  passed to `referenceModel()` live only on the global handle. Because the result
+  is typed like the handle, its type still lists them; read them from the handle.
+- Run queries inside a transaction. Pass a transaction client as described in
+  [Saving revisions and edit conflicts](revisions.md#saving-revisions-and-edit-conflicts).
 
 ## Defining Models
 
@@ -343,7 +397,7 @@ psql -v app_db=libreviews -v app_user=libreviews_user \
 
 ## Core Building Blocks
 
-- **DataAccessLayer (`src/lib/data-access-layer.ts`)** – Owns the shared `pg.Pool`, manages migrations, and keeps a per-instance `ModelRegistry` so constructors are isolated between DALs (useful for fixtures/tests).
+- **DataAccessLayer (`src/lib/data-access-layer.ts`)** – Owns the shared `pg.Pool`, manages migrations, and keeps a per-instance `ModelRegistry` so constructors are isolated between DALs (useful for fixtures/tests). `getModel()` resolves names, handles and manifests in that registry; see [Resolving Models from a DAL Instance](#resolving-models-from-a-dal-instance).
 - **Model runtime (`src/lib/model.ts`)** – Implements camelCase ↔︎ snake_case mapping, validation/default handling, change tracking, and persistence primitives consumed by every manifest-driven model.
 - **Manifest system (`src/lib/create-model.ts`, `src/lib/model-manifest.ts`)** – Declarative manifests define schema, relations, revision support, and custom methods. `defineModel` returns a lazy proxy constructor whose types are inferred from the manifest.
 - **Query builder (`src/lib/query-builder.ts`)** – Builds SQL fragments for predicates, joins, ordering, pagination, and deletes. `filterWhere` wraps it with typed predicates for day-to-day usage.

@@ -1,5 +1,6 @@
 import type { Pool, PoolClient, QueryResult } from 'pg';
 import type { ModelSchemaField } from './model.js';
+import type { InferConstructor, ModelManifest } from './model-manifest.js';
 import type { JoinOptions } from './query-builder.js';
 
 export type JsonValue = unknown;
@@ -614,6 +615,13 @@ export interface DataAccessLayer {
     TVirtual extends JsonObject = JsonObject,
     TRelations extends string = string,
   >(name: string): ModelConstructor<TData, TVirtual, ModelInstance<TData, TVirtual>, TRelations>;
+  /**
+   * Resolve this DAL's constructor for a `defineModel()`/`referenceModel()`
+   * handle, or for a constructor (including a handle cast to a model type).
+   */
+  getModel<Model extends ModelConstructor>(model: Model): Model;
+  /** Resolve a manifest's `tableName` in this DAL's registry, typed from the manifest. */
+  getModel<Manifest extends ModelManifest>(manifest: Manifest): InferConstructor<Manifest>;
   createModel<TData extends JsonObject = JsonObject, TVirtual extends JsonObject = JsonObject>(
     name: string,
     schema: Record<string, ModelSchemaField>,

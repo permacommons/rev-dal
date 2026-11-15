@@ -1,5 +1,5 @@
 import { createFilterWhereStatics } from './filter-where.js';
-import { getRegisteredModel } from './model-handle.js';
+import { getRegisteredModel, registerModelHandle } from './model-handle.js';
 import type { InitializeModelOptions } from './model-initializer.js';
 import { initializeModel } from './model-initializer.js';
 import type {
@@ -214,7 +214,7 @@ export function createModelProxy<Manifest extends ModelManifest>(
 
   // Return a proxy that forwards to the initialized model
   // Model will be initialized by bootstrap before any app code runs
-  return new Proxy(target, {
+  const proxy = new Proxy(target, {
     get(_target, prop: string | symbol) {
       if (staticPropertyKeys.has(String(prop))) {
         return Reflect.get(target, prop);
@@ -239,6 +239,9 @@ export function createModelProxy<Manifest extends ModelManifest>(
       return new (model as new (...args: unknown[]) => unknown)(...args) as object;
     },
   });
+
+  registerModelHandle(proxy, manifest.tableName);
+  return proxy;
 }
 
 /**

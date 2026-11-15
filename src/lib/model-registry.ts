@@ -12,6 +12,20 @@ export interface RegisterModelOptions extends JsonObject {
 
 type AnyModelConstructor = ModelConstructor<JsonObject, JsonObject, ModelInstance>;
 
+// Registry key of every registered constructor, so another DAL can resolve
+// its own constructor for the same model.
+const registryKeysByModel = new WeakMap<object, string>();
+
+/**
+ * Return the registry key a constructor was registered under.
+ * @param value Candidate constructor.
+ * @returns The registry key, or undefined if the value was never registered.
+ * @internal
+ */
+export function getRegisteredModelKey(value: unknown): string | undefined {
+  return typeof value === 'function' ? registryKeysByModel.get(value) : undefined;
+}
+
 /**
  * Track model constructors registered against a particular DAL instance. The
  * registry maintains lookups by both table name and optional registry key so
@@ -67,6 +81,7 @@ export class ModelRegistry {
 
     this.modelsByTable.set(tableName, model as AnyModelConstructor);
     this.modelsByKey.set(canonicalKey, model as AnyModelConstructor);
+    registryKeysByModel.set(model, canonicalKey);
 
     return model;
   }

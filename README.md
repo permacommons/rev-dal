@@ -49,8 +49,8 @@ exist; declaring a model does not create them.
 
 ## Documentation
 
-- [Models and bootstrap](docs/models.md) — lifecycle, manifests, methods, typing,
-  cross-model references, logging, and database grants.
+- [Models and bootstrap](docs/models.md) — lifecycle, per-DAL model lookup,
+  manifests, methods, typing, cross-model references, logging, and database grants.
 - [Queries and relations](docs/queries.md) — filtering, projections, aggregates,
   joins, deletion, and loading or writing associations.
 - [Revisions](docs/revisions.md) — revision history, edit conflicts, and transactions.

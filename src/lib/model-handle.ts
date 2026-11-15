@@ -15,6 +15,35 @@ type BootstrapModule = {
 
 type BootstrapResolver = () => BootstrapModule;
 
+// Handles are proxies whose property reads go through the bootstrap resolver,
+// so their table names are tracked here, keyed by the proxy itself.
+const handleTableNames = new WeakMap<object, string>();
+
+/**
+ * Record the table name a model handle refers to, so DAL instances can resolve
+ * it without consulting the bootstrap resolver.
+ * @param handle Proxy returned to callers.
+ * @param tableName Manifest table name or registry key.
+ * @internal
+ */
+export function registerModelHandle(handle: object, tableName: string): void {
+  handleTableNames.set(handle, tableName);
+}
+
+/**
+ * Return the table name recorded for a model handle without touching its
+ * proxy traps.
+ * @param value Candidate handle.
+ * @returns The recorded table name, or undefined for anything else.
+ * @internal
+ */
+export function getModelHandleTableName(value: unknown): string | undefined {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
+    return undefined;
+  }
+  return handleTableNames.get(value);
+}
+
 let bootstrapResolver: BootstrapResolver = () => {
   throw new Error(
     'DAL bootstrap resolver not configured. Import bootstrap/dal.ts before using model handles.'
@@ -145,7 +174,7 @@ export function createModelReference<
     });
   }
 
-  return new Proxy(handle, {
+  const proxy = new Proxy(handle, {
     get(target, prop, receiver) {
       if (Reflect.has(target, prop)) {
         return Reflect.get(target, prop, receiver);
@@ -180,6 +209,9 @@ export function createModelReference<
       }
     },
   }) as ModelHandle<TRecord, TVirtual, TInstance>;
+
+  registerModelHandle(proxy, tableName);
+  return proxy;
 }
 
 type StaticMethodsMap = Record<string, (...args: unknown[]) => unknown>;
