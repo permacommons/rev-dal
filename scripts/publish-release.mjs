@@ -25,6 +25,7 @@ export async function publishRelease(
     );
   }
   if (!tarball) throw new Error('Provide the tested package tarball');
+  tarball = resolve(tarball);
   const integrity = `sha512-${createHash('sha512').update(readFileSync(tarball)).digest('base64')}`;
   if (repository !== 'permacommons/rev-dal') throw new Error('Unexpected release repository');
   const packed = JSON.parse(command('tar', ['-xOf', tarball, 'package/package.json']));
