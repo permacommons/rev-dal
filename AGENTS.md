@@ -36,8 +36,8 @@ actions. Use `mise exec --` for local Node/npm commands.
 
 ### Version and API policy
 
-- Release stable versions only. The first deliberate release should be `0.2.0`;
-  the existing `0.1.0` is an unreleased development placeholder.
+- Release stable versions only. The first npm release is `0.2.1`; `0.1.0` was
+  a development placeholder and `0.2.0` failed before publication.
 - Before 1.0, compatible fixes and additions increment the patch version;
   breaking changes increment the minor version. Choose `1.0.0` explicitly when
   committing to a stable API. Afterwards use normal major/minor/patch semantics.
@@ -83,12 +83,12 @@ actions. Use `mise exec --` for local Node/npm commands.
    gh secret set NPM_BOOTSTRAP_TOKEN --repo permacommons/rev-dal
    ```
 
-   Prepare the first release (`0.2.0`), verify its PR checks, and merge when authorized.
+   Prepare the first release (`0.2.1`), verify its PR checks, and merge when authorized.
    Only its final publish step receives this secret as `NODE_AUTH_TOKEN`; neither
    package tests nor consumer jobs receive it. npm attempts OIDC first and falls
    back to the token before a trusted publisher exists. The workflow publishes the
    exact tested tarball, with provenance, then creates its tag and GitHub release.
-   The secret is eligible only for version `0.2.0`; later versions cannot use it.
+   The secret is eligible only for version `0.2.1`; later versions cannot use it.
    If publication already failed before the secret was added, use the retry procedure.
 6. After the first publication succeeds, remove the GitHub secret and revoke the
    temporary token in npm. Agents can remove the repository secret without reading
@@ -118,7 +118,7 @@ Run from this repository, or supply `--repo permacommons/rev-dal` to `gh`:
 
 ```bash
 gh workflow run prepare-release.yml --ref main \
-  -f version=0.2.0 \
+  -f version=0.2.1 \
   -f notes='First versioned release. Existing rev-dal imports remain supported.'
 ```
 
@@ -160,8 +160,11 @@ Their required database setup currently mirrors their own CI. Update this workfl
 when consumer requirements change. A consumer CI failure is a release blocker;
 do not bypass it or change consumer code as part of a release without authorization.
 
+Resolve tarball paths to absolute paths before invoking npm; a bare relative
+`directory/file.tgz` can be interpreted as a GitHub dependency.
+
 Publication downloads the validated artifact, uses `npm publish` with OIDC (or the
-temporary token for the first `0.2.0` publication) and provenance, verifies registry
+temporary token for the first `0.2.1` publication) and provenance, verifies registry
 integrity, then creates the immutable tag and GitHub
 release from the checked-in notes. The publish job does not rebuild the package.
 The summary includes version, commit, integrity, and publication URLs. No consumer
@@ -177,8 +180,8 @@ release PRs can still exist: merge them in version order and close stale ones.
   blindly rerun preparation. Dispatch any missing checks on that branch:
 
   ```bash
-  gh workflow run lint.yml --ref release/v0.2.0
-  gh workflow run tests.yml --ref release/v0.2.0
+  gh workflow run lint.yml --ref release/v0.2.1
+  gh workflow run tests.yml --ref release/v0.2.1
   ```
 
 - After editing a bot-created PR, dispatch both checks again at its new head.
@@ -223,7 +226,7 @@ mise exec -- npm test
 mise exec -- npm run build
 artifact_dir=$(mktemp -d)
 mise exec -- npm pack --ignore-scripts --pack-destination "$artifact_dir"
-mise exec -- node scripts/check-package.mjs "$artifact_dir/rev-dal-0.2.0.tgz"
+mise exec -- node scripts/check-package.mjs "$artifact_dir/rev-dal-0.2.1.tgz"
 ```
 
 Use the current package version in the tarball filename. The package smoke check

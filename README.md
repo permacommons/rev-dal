@@ -20,7 +20,7 @@ Node.js 22 or later and PostgreSQL.
 ## Install
 
 ```bash
-npm install --save-exact rev-dal@0.2.0
+npm install --save-exact rev-dal@0.2.1
 ```
 
 Use an exact release and commit your package lockfile. For unreleased development

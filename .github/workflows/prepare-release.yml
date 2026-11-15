@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'patch, minor, major, or an explicit stable version (first release: 0.2.0)'
+        description: 'patch, minor, major, or an explicit stable version (first release: 0.2.1)'
         required: true
         type: string
       notes:

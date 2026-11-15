@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { publishRelease } from './publish-release.mjs';
@@ -137,6 +137,7 @@ function publication(
     sourceCommit = 'a'.repeat(40),
     packedVersion = '0.2.0',
     latestVersion = '0.1.0',
+    relativeTarball = false,
   } = {}
 ) {
   const directory = fixture(t);
@@ -147,8 +148,9 @@ function publication(
   t.mock.method(console, 'log', () => undefined);
   return {
     calls,
+    tarball,
     run: () =>
-      publishRelease(tarball, {
+      publishRelease(relativeTarball ? relative(process.cwd(), tarball) : tarball, {
         info: { version: '0.2.0', tag: 'v0.2.0', notesPath: 'releases/0.2.0.md' },
         wait: async () => undefined,
         repository: 'permacommons/rev-dal',
@@ -245,6 +247,17 @@ test('new publication tolerates registry propagation before completing GitHub st
   await run();
   assert.equal(calls.filter(([command]) => command === 'npm').length, 1);
   assert.ok(calls.some(([command, subcommand]) => command === 'gh' && subcommand === 'release'));
+});
+
+test('relative artifact paths are passed to npm as absolute local paths', async t => {
+  const { run, calls, tarball } = publication(t, {
+    statuses: [404, 404, 200],
+    relativeTarball: true,
+  });
+  await run();
+  const publish = calls.find(([command]) => command === 'npm');
+  assert.ok(isAbsolute(publish[2]));
+  assert.equal(publish[2], tarball);
 });
 
 test('a mismatched workflow identity cannot attest an older checkout', async t => {
