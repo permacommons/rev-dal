@@ -260,6 +260,13 @@ test('relative artifact paths are passed to npm as absolute local paths', async 
   assert.equal(publish[2], tarball);
 });
 
+test('an accepted publication waits through prolonged npm processing without republishing', async t => {
+  const { run, calls } = publication(t, { statuses: [404, 404, ...Array(10).fill(404), 200] });
+  await run();
+  assert.equal(calls.filter(([command]) => command === 'npm').length, 1);
+  assert.ok(calls.some(([command, subcommand]) => command === 'gh' && subcommand === 'release'));
+});
+
 test('a mismatched workflow identity cannot attest an older checkout', async t => {
   const { run, calls } = publication(t, { sourceCommit: 'b'.repeat(40) });
   await assert.rejects(run(), /workflow source identity/);

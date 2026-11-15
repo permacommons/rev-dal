@@ -170,6 +170,10 @@ release from the checked-in notes. The publish job does not rebuild the package.
 The summary includes version, commit, integrity, and publication URLs. No consumer
 dependency update or deployment happens automatically in this initial setup.
 
+npm can accept a publication and process it for several minutes before the version
+becomes readable. The publish script waits up to five minutes for visibility before
+verifying integrity; it does not resubmit the accepted package while polling.
+
 ### Recovery
 
 Preparation and publication each serialize their runs. Different unpublished
@@ -212,6 +216,10 @@ release PRs can still exist: merge them in version order and close stale ones.
 - If the tarball cannot be reproduced, investigate the build inputs; never waive
   the integrity check. If publication failed before npm accepted the package and
   source changes are required, prepare a new version.
+- If npm reports that it accepted the publication but visibility still times out,
+  wait for the version to appear in the registry, then retry the original run to
+  verify its bytes and finish the tag and GitHub release. Do not create a new
+  version merely because an accepted publication is still processing.
 - Consumer updates are deferred. When authorized, migrate each consumer to an
   exact published version and commit its lockfile; keep deployment on `npm ci`.
 
