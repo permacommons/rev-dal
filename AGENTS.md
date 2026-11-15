@@ -56,7 +56,8 @@ actions. Use `mise exec --` for local Node/npm commands.
    package is published merely by merging the setup: the version stays `0.1.0`.
 2. Enable Actions and allow GitHub Actions to create pull requests in repository
    Settings → Actions → General. Workflows explicitly request their permissions;
-   no PAT, GitHub App, cross-repository write token, or npm token is required.
+   no PAT, GitHub App, or cross-repository write token is required. Only the first
+   npm publication needs a temporary npm bootstrap token; routine releases use OIDC.
 3. Protect `main` against direct pushes and require the `lint`, `test`,
    `consumers (lib.reviews)`, and `consumers (agpwiki)` checks. Permit the chosen
    merge method (squash or merge commits both work). Confirm the check names in
@@ -66,31 +67,50 @@ actions. Use `mise exec --` for local Node/npm commands.
    npm account. A registry 404 does not reserve the name. If it is unavailable,
    change the package name and scripts consistently before releasing; do not
    silently publish under another name.
-5. For a brand-new package, prepare and merge the first release as described
-   below. Its publish job will need initial npm authentication because the
-   package's trusted publisher cannot yet be configured. Download the tested
-   tarball from that run and publish those exact bytes once using an authenticated
-   owner session (interactive account verification may be required):
+5. For a brand-new package, the npm account owner creates a temporary granular
+   access token on npmjs.com (account menu → Access Tokens → Generate New Token).
+   Use package permission **Read and write (publish and stage)**, enable **Bypass
+   two-factor authentication**, and choose the shortest practical expiry (one day
+   suffices). An unscoped package that does not exist cannot be selected individually;
+   use **All Packages** for this bootstrap token. Organization-management access
+   is unnecessary. The owner must complete npm's account authentication personally.
+   Agents must not request the token value in chat, print it, or commit it.
+
+   Store it as the repository Actions secret `NPM_BOOTSTRAP_TOKEN`, using GitHub
+   Settings → Secrets and variables → Actions, or this interactive command:
 
    ```bash
-   artifact_dir=$(mktemp -d)
-   gh run download <publish-run-id> --repo permacommons/rev-dal \
-     --name rev-dal-package --dir "$artifact_dir"
-   npm publish "$artifact_dir/rev-dal.tgz" --access public --ignore-scripts
+   gh secret set NPM_BOOTSTRAP_TOKEN --repo permacommons/rev-dal
    ```
 
-   Check that all validation jobs passed and compare the artifact's SHA-512 with
-   the workflow summary before publishing. Do not build a different local copy.
-6. In npm's `rev-dal` package Settings → Trusted Publisher, authorize GitHub Actions:
+   Prepare the first release (`0.2.0`), verify its PR checks, and merge when authorized.
+   Only its final publish step receives this secret as `NODE_AUTH_TOKEN`; neither
+   package tests nor consumer jobs receive it. npm attempts OIDC first and falls
+   back to the token before a trusted publisher exists. The workflow publishes the
+   exact tested tarball, with provenance, then creates its tag and GitHub release.
+   The secret is eligible only for version `0.2.0`; later versions cannot use it.
+   If publication already failed before the secret was added, use the retry procedure.
+6. After the first publication succeeds, remove the GitHub secret and revoke the
+   temporary token in npm. Agents can remove the repository secret without reading
+   its value; the account owner can revoke the npm token:
+
+   ```bash
+   gh secret delete NPM_BOOTSTRAP_TOKEN --repo permacommons/rev-dal
+   ```
+
+7. Shortly before the next release, configure npm's `rev-dal` package Settings →
+   Trusted Publisher to authorize GitHub Actions:
    owner `permacommons`, repository `rev-dal`, workflow filename `publish.yml`,
    no environment. Enable direct `npm publish`; staged-only authorization would
    require interactive approvals. The workflow uses GitHub-hosted runners, npm 11,
    and `id-token: write`. Routine OIDC publication includes provenance.
-7. Retry the first release using its merged commit SHA. The workflow verifies the
-   existing registry artifact and completes the tag and GitHub release. The
-   bootstrap publication uses your owner session; subsequent new versions use OIDC.
+   A new trusted publisher must successfully publish within two days or it expires;
+   configure it when the next release is ready. A retry of an existing version only
+   verifies registry integrity and does not validate the OIDC configuration. Later
+   versions publish through OIDC without the bootstrap secret.
 
-Reference: [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
+References: [npm token setup](https://docs.npmjs.com/creating-and-viewing-access-tokens/)
+and [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
 
 ### Prepare and release
 
@@ -140,8 +160,9 @@ Their required database setup currently mirrors their own CI. Update this workfl
 when consumer requirements change. A consumer CI failure is a release blocker;
 do not bypass it or change consumer code as part of a release without authorization.
 
-Publication downloads the validated artifact, uses `npm publish` with OIDC and
-provenance, verifies registry integrity, then creates the immutable tag and GitHub
+Publication downloads the validated artifact, uses `npm publish` with OIDC (or the
+temporary token for the first `0.2.0` publication) and provenance, verifies registry
+integrity, then creates the immutable tag and GitHub
 release from the checked-in notes. The publish job does not rebuild the package.
 The summary includes version, commit, integrity, and publication URLs. No consumer
 dependency update or deployment happens automatically in this initial setup.
@@ -202,7 +223,7 @@ mise exec -- npm test
 mise exec -- npm run build
 artifact_dir=$(mktemp -d)
 mise exec -- npm pack --ignore-scripts --pack-destination "$artifact_dir"
-mise exec -- node scripts/check-package.mjs "$artifact_dir/rev-dal-0.1.0.tgz"
+mise exec -- node scripts/check-package.mjs "$artifact_dir/rev-dal-0.2.0.tgz"
 ```
 
 Use the current package version in the tarball filename. The package smoke check

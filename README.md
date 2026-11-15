@@ -20,12 +20,11 @@ Node.js 22 or later and PostgreSQL.
 ## Install
 
 ```bash
-npm install github:permacommons/rev-dal
+npm install --save-exact rev-dal@0.2.0
 ```
 
-Versioned npm publishing is being bootstrapped. Until the first release is
-published, use the Git installation above. After publication, consumers can pin
-an exact release with `npm install --save-exact rev-dal@<version>`.
+Use an exact release and commit your package lockfile. For unreleased development
+changes, Git installations remain supported.
 
 ## Quick start
 
