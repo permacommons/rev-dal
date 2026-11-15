@@ -34,10 +34,21 @@ Release automation lives in this repository and uses our own scripts, official
 introduce Release Please, semantic-release, Changesets, or third-party release
 actions. Use `mise exec --` for local Node/npm commands.
 
+### Publishing setup
+
+The unscoped npm package `rev-dal` is owned by npm maintainer `eloquence`.
+GitHub Actions trusted publishing is configured for owner `permacommons`,
+repository `rev-dal`, workflow `publish.yml`, no environment, with direct
+`npm publish` allowed. Publication uses OIDC and requires no stored npm credential
+or per-release interactive authentication.
+
+Start with [Prepare and release](#prepare-and-release). Keep the workflow's
+`id-token: write` permission and npm trusted-publisher settings aligned when
+changing publication configuration.
+
 ### Version and API policy
 
-- Release stable versions only. The first npm release is `0.2.1`; `0.1.0` was
-  a development placeholder and `0.2.0` failed before publication.
+- Release stable versions only.
 - Before 1.0, compatible fixes and additions increment the patch version;
   breaking changes increment the minor version. Choose `1.0.0` explicitly when
   committing to a stable API. Afterwards use normal major/minor/patch semantics.
@@ -50,82 +61,21 @@ actions. Use `mise exec --` for local Node/npm commands.
 - Keep the Git-install `prepare` build until consumers have migrated. Registry
   packages contain built JavaScript and declarations and require no consumer build.
 
-### One-time setup
-
-1. Merge the workflow setup into `main` so manual dispatch is available. No npm
-   package is published merely by merging the setup: the version stays `0.1.0`.
-2. Enable Actions and allow GitHub Actions to create pull requests in repository
-   Settings → Actions → General. Workflows explicitly request their permissions;
-   no PAT, GitHub App, or cross-repository write token is required. Only the first
-   npm publication needs a temporary npm bootstrap token; routine releases use OIDC.
-3. Protect `main` against direct pushes and require the `lint`, `test`,
-   `consumers (lib.reviews)`, and `consumers (agpwiki)` checks. Permit the chosen
-   merge method (squash or merge commits both work). Confirm the check names in
-   the first run before adding requirements. The release PR is the review point;
-   do not add a recurring environment approval if unattended publishing is wanted.
-4. Establish ownership of the unscoped npm package `rev-dal` using the owner's
-   npm account. A registry 404 does not reserve the name. If it is unavailable,
-   change the package name and scripts consistently before releasing; do not
-   silently publish under another name.
-5. For a brand-new package, the npm account owner creates a temporary granular
-   access token on npmjs.com (account menu → Access Tokens → Generate New Token).
-   Use package permission **Read and write (publish and stage)**, enable **Bypass
-   two-factor authentication**, and choose the shortest practical expiry (one day
-   suffices). An unscoped package that does not exist cannot be selected individually;
-   use **All Packages** for this bootstrap token. Organization-management access
-   is unnecessary. The owner must complete npm's account authentication personally.
-   Agents must not request the token value in chat, print it, or commit it.
-
-   Store it as the repository Actions secret `NPM_BOOTSTRAP_TOKEN`, using GitHub
-   Settings → Secrets and variables → Actions, or this interactive command:
-
-   ```bash
-   gh secret set NPM_BOOTSTRAP_TOKEN --repo permacommons/rev-dal
-   ```
-
-   Prepare the first release (`0.2.1`), verify its PR checks, and merge when authorized.
-   Only its final publish step receives this secret as `NODE_AUTH_TOKEN`; neither
-   package tests nor consumer jobs receive it. npm attempts OIDC first and falls
-   back to the token before a trusted publisher exists. The workflow publishes the
-   exact tested tarball, with provenance, then creates its tag and GitHub release.
-   The secret is eligible only for version `0.2.1`; later versions cannot use it.
-   If publication already failed before the secret was added, use the retry procedure.
-6. After the first publication succeeds, remove the GitHub secret and revoke the
-   temporary token in npm. Agents can remove the repository secret without reading
-   its value; the account owner can revoke the npm token:
-
-   ```bash
-   gh secret delete NPM_BOOTSTRAP_TOKEN --repo permacommons/rev-dal
-   ```
-
-7. Shortly before the next release, configure npm's `rev-dal` package Settings →
-   Trusted Publisher to authorize GitHub Actions:
-   owner `permacommons`, repository `rev-dal`, workflow filename `publish.yml`,
-   no environment. Enable direct `npm publish`; staged-only authorization would
-   require interactive approvals. The workflow uses GitHub-hosted runners, npm 11,
-   and `id-token: write`. Routine OIDC publication includes provenance.
-   A new trusted publisher must successfully publish within two days or it expires;
-   configure it when the next release is ready. A retry of an existing version only
-   verifies registry integrity and does not validate the OIDC configuration. Later
-   versions publish through OIDC without the bootstrap secret.
-
-References: [npm token setup](https://docs.npmjs.com/creating-and-viewing-access-tokens/)
-and [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
-
 ### Prepare and release
 
 Run from this repository, or supply `--repo permacommons/rev-dal` to `gh`:
 
 ```bash
 gh workflow run prepare-release.yml --ref main \
-  -f version=0.2.1 \
-  -f notes='First versioned release. Existing rev-dal imports remain supported.'
+  -f version=patch \
+  -f notes='Describe the changes in this release and any migration instructions.'
 ```
 
 `version` accepts `patch`, `minor`, `major`, or an explicit increasing `X.Y.Z`.
 Choose the bump based on the policy above; no commit-message parser decides it.
 The `notes` input accepts multiline Markdown and must describe the actual release.
-Do not use the example notes without reviewing the changes since the consumer pins.
+Review changes since the last published release tag before writing the notes; do
+not submit the placeholder text above.
 
 `prepare-release.yml` reads current `main`, updates package.json and package-lock.json
 without lifecycle scripts, writes release notes, pushes `release/v<version>`, and
@@ -137,6 +87,16 @@ Inspect the diff, notes, workflow results, and any migration instructions, then
 merge the passing PR when authorized to release. `publish.yml` detects a version
 change on `main` and validates the exact merged commit before publishing. Non-version
 package metadata changes do not publish. Both workflows only start on `main`.
+
+### Changelog and release notes
+
+`releases/<version>.md` files are the changelog; there is no combined `CHANGELOG.md`.
+The person or agent preparing the release supplies the Markdown notes explicitly.
+The workflow does not generate them from commit messages. It adds the version
+heading and includes the file in the release PR for review. Publication uses that
+same file as the GitHub release description. Include meaningful changes and any
+migration instructions, review them alongside the version bump, and leave released
+notes unchanged.
 
 ### Validation and artifacts
 
@@ -163,12 +123,11 @@ do not bypass it or change consumer code as part of a release without authorizat
 Resolve tarball paths to absolute paths before invoking npm; a bare relative
 `directory/file.tgz` can be interpreted as a GitHub dependency.
 
-Publication downloads the validated artifact, uses `npm publish` with OIDC (or the
-temporary token for the first `0.2.1` publication) and provenance, verifies registry
-integrity, then creates the immutable tag and GitHub
+Publication downloads the validated artifact, uses `npm publish` with OIDC and
+provenance, verifies registry integrity, then creates the immutable tag and GitHub
 release from the checked-in notes. The publish job does not rebuild the package.
 The summary includes version, commit, integrity, and publication URLs. No consumer
-dependency update or deployment happens automatically in this initial setup.
+dependency update or deployment happens automatically during a release.
 
 npm can accept a publication and process it for several minutes before the version
 becomes readable. The publish script waits up to five minutes for visibility before
@@ -184,8 +143,9 @@ release PRs can still exist: merge them in version order and close stale ones.
   blindly rerun preparation. Dispatch any missing checks on that branch:
 
   ```bash
-  gh workflow run lint.yml --ref release/v0.2.1
-  gh workflow run tests.yml --ref release/v0.2.1
+  release_branch='release/v<version>'
+  gh workflow run lint.yml --ref "$release_branch"
+  gh workflow run tests.yml --ref "$release_branch"
   ```
 
 - After editing a bot-created PR, dispatch both checks again at its new head.
@@ -207,8 +167,8 @@ release PRs can still exist: merge them in version order and close stale ones.
   wrong source identity, so the publish script rejects such mismatches.
 
   The target must belong to main's first-parent history, introduce an increasing
-  version, and have matching manifests and version-specific notes. Validation runs again. Existing
-  tags must point to that exact commit; an existing registry package must match
+  version, and have matching manifests and version-specific notes. Validation runs
+  again. Existing tags must point to that exact commit; an existing registry package must match
   the tested tarball's SHA-512. Matching publication steps are skipped and missing
   steps are completed. Conflicting bytes or tags fail rather than overwrite.
   Revalidation replaces the earlier run artifact with the newly tested tarball.
@@ -234,9 +194,10 @@ mise exec -- npm test
 mise exec -- npm run build
 artifact_dir=$(mktemp -d)
 mise exec -- npm pack --ignore-scripts --pack-destination "$artifact_dir"
-mise exec -- node scripts/check-package.mjs "$artifact_dir/rev-dal-0.2.1.tgz"
+package_version=$(mise exec -- node -p "require('./package.json').version")
+mise exec -- node scripts/check-package.mjs "$artifact_dir/rev-dal-$package_version.tgz"
 ```
 
-Use the current package version in the tarball filename. The package smoke check
-installs runtime dependencies from npm into a temporary directory, then removes it.
+The package smoke check installs runtime dependencies from npm into a temporary
+directory, then removes it.
 The runtime tests require the test database configuration in CONTRIBUTING.md.
