@@ -20,6 +20,8 @@
     "dist",
     "setup-db-grants.sql",
     "README.md",
+    "CONTRIBUTING.md",
+    "docs",
     "LICENSE"
   ],
   "scripts": {
