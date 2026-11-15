@@ -48,7 +48,10 @@ To include these writes in a larger transaction, pass the client from
 `dal.transaction()`: `save({ transaction: client })`,
 `saveAll(joinOptions, { transaction: client })` or
 `deleteAllRevisions(user, { transaction: client })`. The caller then owns
-COMMIT/ROLLBACK.
+COMMIT/ROLLBACK. The handle must be a checked-out PostgreSQL `PoolClient` in an
+active transaction; passing a `Pool` is rejected. rev-dal does not issue `BEGIN`
+on a supplied client, so use `dal.transaction()` or explicitly begin the
+transaction yourself before passing it.
 
 Errors raised by the DAL itself (`ValidationError`, `DocumentNotFound`,
 `RevisionConflictError`, …) reach the caller with their own type; only raw

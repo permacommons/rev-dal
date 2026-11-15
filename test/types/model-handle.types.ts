@@ -73,7 +73,7 @@ type _handleCreateFromRow = Expect<
 
 type ExampleGetResult = Awaited<ReturnType<typeof exampleHandle.get>>;
 
-type _handleGet = Expect<Equal<ExampleGetResult, ExampleInstanceBase | null>>;
+type _handleGet = Expect<Equal<ExampleGetResult, ExampleInstanceBase>>;
 
 const handleWithMethods = referenceModel(exampleManifest, {
   parseNumber(value: string) {

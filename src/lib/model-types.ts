@@ -62,7 +62,7 @@ export type FilterWhereLiteral<TRecord extends JsonObject, TOps> = Partial<{
 }>;
 
 export interface TransactionOptions {
-  transaction?: Pool | PoolClient | null;
+  transaction?: PoolClient | null;
 }
 
 export interface SaveOptions extends TransactionOptions {
@@ -622,5 +622,5 @@ export interface DataAccessLayer {
   getRegisteredModels(): Map<string, ModelConstructor>;
   getModelRegistry?(): unknown;
   transaction?<T>(callback: (client: PoolClient) => Promise<T>): Promise<T>;
-  pool?: Pool;
+  pool?: Pool | null;
 }

@@ -101,7 +101,9 @@ Apply filters, revision-history helpers, sorting, pagination, and sensitive-fiel
 opt-ins before `select()`. The projection captures the query and parameter values
 at that point; later changes to the original builder do not affect it. Normal
 revision guards still apply unless disabled with the existing revision helpers.
-`first()` limits the query to one row and preserves `limit(0)`.
+`first()` returns `null` when no row matches. It limits the query to one row and
+preserves `limit(0)`. In contrast, `Model.get(id)` returns an instance or throws
+`DocumentNotFound` when the record does not exist.
 
 An empty selection is rejected. Projection cannot be combined with `getJoin()`,
 `whereRelated()` (which currently creates a join), or `groupBy()`; no identity

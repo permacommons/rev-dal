@@ -58,6 +58,9 @@ revision with the stored row from before the edit.
 
 ### Type Tests
 
+The source, declaration build, and type tests enable `strictNullChecks`. Other
+strict-mode checks are not yet enabled.
+
 Type-level checks live under `test/types/` and are compiled with a dedicated config:
 
 ```bash
