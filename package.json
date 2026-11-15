@@ -1,6 +1,16 @@
 {
   "name": "rev-dal",
   "version": "0.1.0",
+  "description": "A PostgreSQL data access layer with revision support and rich model typing",
+  "license": "CC0-1.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/permacommons/rev-dal.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -21,6 +31,8 @@
     "setup-db-grants.sql",
     "README.md",
     "CONTRIBUTING.md",
+    "AGENTS.md",
+    "releases",
     "docs",
     "LICENSE"
   ],
@@ -31,6 +43,7 @@
     "prepare": "npm run build",
     "test": "node --import tsx --test --test-concurrency=1 test/**/*.test.ts",
     "test:types": "tsc -p tsconfig.type-tests.json --noEmit",
+    "test:release": "node --test scripts/release.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

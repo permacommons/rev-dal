@@ -23,6 +23,10 @@ Node.js 22 or later and PostgreSQL.
 npm install github:permacommons/rev-dal
 ```
 
+Versioned npm publishing is being bootstrapped. Until the first release is
+published, use the Git installation above. After publication, consumers can pin
+an exact release with `npm install --save-exact rev-dal@<version>`.
+
 ## Quick start
 
 Create a DAL with your application's PostgreSQL connection settings:
@@ -61,3 +65,5 @@ exist; declaring a model does not create them.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, test database configuration,
 checks, and the source directory map.
+See the [release runbook](AGENTS.md#releases) for versioning, automated releases,
+and npm publisher setup.

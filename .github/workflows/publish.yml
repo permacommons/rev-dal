@@ -1,0 +1,93 @@
+name: Publish release
+
+on:
+  push:
+    branches: [main]
+    paths: [package.json, 'releases/**']
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: 'Full SHA of the merged main commit that introduced the release version'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-release
+  cancel-in-progress: false
+
+jobs:
+  retry:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Rerun the original push workflow with its original source identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow publish.yml --event push --commit "$COMMIT" --limit 1 --json databaseId --jq '.[0].databaseId')
+          [[ "$run_id" =~ ^[0-9]+$ ]] || { echo 'No original publish push run found for this commit'; exit 1; }
+          gh run rerun "$run_id" --repo "$GITHUB_REPOSITORY"
+          printf 'Retry queued: https://github.com/%s/actions/runs/%s\n' "$GITHUB_REPOSITORY" "$run_id" >> "$GITHUB_STEP_SUMMARY"
+
+  target:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      release: ${{ steps.target.outputs.release }}
+      commit: ${{ steps.target.outputs.commit }}
+      version: ${{ steps.target.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+      - name: Resolve release commit and version
+        id: target
+        run: node scripts/release-target.mjs
+
+  validate:
+    needs: target
+    if: needs.target.outputs.release == 'true'
+    uses: ./.github/workflows/tests.yml
+    with:
+      commit: ${{ needs.target.outputs.commit }}
+
+  publish:
+    needs: [target, validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.target.outputs.commit }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          registry-url: https://registry.npmjs.org
+      - name: Install npm with OIDC support
+        run: npm install --global npm@11
+      - uses: actions/download-artifact@v4
+        with:
+          name: rev-dal-package
+          path: release-artifact
+      - name: Publish tested tarball and finish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/publish-release.mjs release-artifact/rev-dal.tgz
