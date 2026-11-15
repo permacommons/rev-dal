@@ -120,13 +120,26 @@ npm run test:types
 ```ts
 import createDataAccessLayer from 'rev-dal';
 import { initializeManifestModels } from 'rev-dal/lib/create-model';
+import { setBootstrapResolver } from 'rev-dal/lib/model-handle';
+
+// Import every runtime model module so defineModel() registers its manifest.
+import './models/user.js';
+import './models/team.js';
 
 const dal = createDataAccessLayer();
+setBootstrapResolver(() => ({
+  getModel: name => dal.modelRegistry.get(name),
+}));
 await dal.connect();
-initializeManifestModels(dal); // registers every manifest that was imported during bootstrap
+initializeManifestModels(dal);
 ```
 
-The DAL is initialised once at startup. Tests and fixtures may spin up isolated instances; disconnecting a DAL clears its registry so cached constructors do not leak across runs.
+Importing a plain manifest alone does not register it; import the module that calls
+`defineModel()`. Include related models such as `user_metas` in your application's
+imports as well. Configure the resolver before initializing models so lazy relation
+targets can resolve through the registry. Call model methods after initialization.
+
+The DAL is initialised once at startup. Tests and fixtures may spin up isolated instances; disconnecting a DAL clears its registry so cached constructors do not leak across runs. Model proxies and references use the globally configured bootstrap resolver; when switching DAL instances, update that resolver to point at the intended instance.
 
 ## Defining Models
 
@@ -143,6 +156,8 @@ import dal from 'rev-dal';
 import type { ManifestInstance, ManifestModel } from 'rev-dal/lib/create-model';
 import { referenceModel } from 'rev-dal/lib/model-handle';
 import type { ModelManifest } from 'rev-dal/lib/model-manifest';
+import type { ModelInstance } from 'rev-dal/lib/model-types';
+import type { TeamInstance } from './team.js';
 
 const { types } = dal;
 
@@ -169,6 +184,8 @@ const userManifest = {
   hasRevisions: false as const,
   schema: {
     id: types.string().uuid(4),
+    email: types.string(),
+    userMetaID: types.string().uuid(4),
     displayName: types
       .string()
       .max(userOptions.maxChars)
@@ -186,6 +203,7 @@ const userManifest = {
   camelToSnake: {
     displayName: 'display_name',
     suppressedNotices: 'suppressed_notices',
+    userMetaID: 'user_meta_id',
   },
   relations: [
     {
@@ -196,10 +214,25 @@ const userManifest = {
       hasRevisions: true,
       cardinality: 'one',
     },
+    {
+      name: 'teams',
+      targetTable: 'teams',
+      sourceKey: 'id',
+      targetKey: 'id',
+      hasRevisions: true,
+      cardinality: 'many',
+      through: {
+        table: 'team_members',
+        sourceForeignKey: 'user_id',
+        targetForeignKey: 'team_id',
+      },
+    },
   ] as const,
 } as const satisfies ModelManifest;
 
-export type UserInstance = ManifestInstance<typeof userManifest>;
+export type UserInstance = ManifestInstance<typeof userManifest> & {
+  teams?: TeamInstance[];
+};
 export type UserModel = ManifestModel<typeof userManifest>;
 
 // For models WITH relations, use intersection pattern for strong typing:
@@ -262,10 +295,7 @@ relations: [
 // models/user.ts - Runtime behavior
 import { defineModel, defineStaticMethods } from 'rev-dal/lib/create-model';
 import userManifest, { type UserInstance, type UserModel } from './manifests/user.ts';
-import { referenceTeam } from './manifests/team.ts';
-
-// Safe cross-model reference - no circular import!
-const Team = referenceTeam();
+import type { TeamInstance } from './manifests/team.ts';
 
 const userStaticMethods = defineStaticMethods(userManifest, {
   async findByEmail(this: UserModel, email: string) {
@@ -275,7 +305,8 @@ const userStaticMethods = defineStaticMethods(userManifest, {
   async getWithTeams(this: UserModel, id: string) {
     const user = await this.get(id);
     if (user) {
-      user.teams = await Team.filterWhere({ /* ... */ }).run();
+      const teamsByUser = await this.loadManyRelated('teams', [id]);
+      (user as UserInstance).teams = (teamsByUser.get(id) ?? []) as TeamInstance[];
     }
     return user;
   }
@@ -548,7 +579,9 @@ Supports `COUNT`, `AVG`, `SUM`, `MIN`, `MAX`. Returns `Map<string, number>` keye
 
 ## Batch Loading Relations
 
-The DAL provides `Model.loadManyRelated()` for efficiently loading many-to-many associations through junction tables. This is especially useful when hydrating lists of records with their related data (the "N+1 query" problem).
+The DAL provides `Model.loadManyRelated()` for efficiently loading direct relations
+and many-to-many associations through junction tables. This is especially useful
+when hydrating lists of records with their related data (the "N+1 query" problem).
 
 ### Basic Usage
 
@@ -567,7 +600,7 @@ reviews.forEach(review => {
 
 `loadManyRelated()` uses the relation metadata defined in your manifest to:
 
-1. Build a single SQL query that joins through the junction table
+1. Build a single SQL query that filters the target column directly or joins through a junction table
 2. Apply revision system guards (`_old_rev_of IS NULL`, `_rev_deleted = false`) when needed
 3. Group results by source ID
 4. Return a `Map<sourceId, TargetInstance[]>` for easy assignment
@@ -592,10 +625,16 @@ const reviewTeamMap = await Review.loadManyRelated('teams', reviewIds);
 
 ### Requirements
 
-The relation must be defined in your model's manifest with:
-- A `through` object specifying the junction table
-- Proper `sourceForeignKey` and `targetForeignKey` columns
-- Optional `hasRevisions` flag for revision-aware filtering
+The relation must be defined in your model's manifest with a target model registered
+on the DAL. For many-to-many relations, provide a `through` object specifying the
+junction table and its `sourceForeignKey` and `targetForeignKey` columns. For direct
+relations, `targetKey` identifies the target field matched against the supplied
+source values. Set `hasRevisions` for revision-aware filtering in either case.
+
+For example, a user's direct `posts` relation can use `sourceKey: 'id'` and
+`targetKey: 'authorID'`. Calling `User.loadManyRelated('posts', userIds)` returns
+posts grouped by author ID. The helper uses the values you supply; it does not
+fetch source rows to resolve a different `sourceKey`.
 
 Example manifest configuration:
 ```ts
